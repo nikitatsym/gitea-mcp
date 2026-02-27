@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gitea MCP Server &mdash; Setup</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0d1117;
+    --surface:  #161b22;
+    --border:   #30363d;
+    --text:     #e6edf3;
+    --muted:    #8b949e;
+    --accent:   #4e8a3e;
+    --accent-h: #5ea04e;
+    --input-bg: #0d1117;
+    --radius:   8px;
+    --font:     -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono:     "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+  }
+
+  html { font-size: 16px; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    line-height: 1.6;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2rem 1rem 4rem;
+  }
+
+  .container {
+    width: 100%;
+    max-width: 720px;
+  }
+
+  /* ── Header ─────────────────────────────────────────────── */
+  header {
+    text-align: center;
+    margin-bottom: 2.5rem;
+  }
+
+  header h1 {
+    font-size: 2rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+
+  header h1 span { color: var(--accent-h); }
+
+  header p {
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+
+  /* ── Cards ──────────────────────────────────────────────── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .card h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+  }
+
+  /* ── Form ───────────────────────────────────────────────── */
+  label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--muted);
+    margin-bottom: 0.35rem;
+  }
+
+  input[type="text"], input[type="url"], input[type="password"] {
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  input:focus { border-color: var(--accent); }
+
+  .hint {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-top: -0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  /* ── Buttons ────────────────────────────────────────────── */
+  .btn-row {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 0.25rem;
+  }
+
+  button {
+    padding: 0.6rem 1.25rem;
+    border: none;
+    border-radius: var(--radius);
+    font-family: var(--font);
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+  }
+
+  button:active { transform: scale(0.97); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover { background: var(--accent-h); }
+
+  .btn-secondary {
+    background: var(--border);
+    color: var(--text);
+  }
+  .btn-secondary:hover { background: #3d444d; }
+
+  .btn-secondary.copied {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  /* ── Code block ─────────────────────────────────────────── */
+  pre {
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    line-height: 1.55;
+    white-space: pre;
+    color: var(--text);
+  }
+
+  .placeholder { color: #d29922; }
+
+  /* ── Instructions ───────────────────────────────────────── */
+  .instructions ol {
+    padding-left: 1.25rem;
+  }
+
+  .instructions li {
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+
+  .instructions code {
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.15rem 0.4rem;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--text);
+  }
+
+  .instructions a {
+    color: var(--accent-h);
+    text-decoration: none;
+  }
+
+  .instructions a:hover { text-decoration: underline; }
+
+  /* ── Footer ─────────────────────────────────────────────── */
+  footer {
+    margin-top: 2rem;
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  footer a {
+    color: var(--accent-h);
+    text-decoration: none;
+  }
+
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <header>
+    <h1><span>Gitea</span> MCP Server</h1>
+    <p>Generate an MCP client configuration for Claude Desktop, Cursor, or any MCP-compatible client.</p>
+  </header>
+
+  <!-- Template config -->
+  <div class="card">
+    <h2>Template Config</h2>
+    <pre id="template-config">{
+  "mcpServers": {
+    "gitea": {
+      "command": "uvx",
+      "args": ["--refresh", "--extra-index-url", "https://nikitatsym.github.io/gitea-mcp/simple", "gitea-mcp"],
+      "env": {
+        "GITEA_URL": "<span class="placeholder">YOUR_GITEA_URL</span>",
+        "GITEA_TOKEN": "<span class="placeholder">YOUR_API_TOKEN</span>"
+      }
+    }
+  }
+}</pre>
+  </div>
+
+  <!-- Generator -->
+  <div class="card">
+    <h2>Generate Your Config</h2>
+
+    <label for="gitea-url">Gitea URL</label>
+    <input type="url" id="gitea-url" placeholder="https://gitea.example.com" spellcheck="false">
+    <p class="hint">Base URL of your Gitea instance (no trailing slash).</p>
+
+    <label for="gitea-token">API Token</label>
+    <input type="password" id="gitea-token" placeholder="paste your token here" spellcheck="false">
+    <p class="hint">Personal access token from Gitea &rarr; Settings &rarr; Applications.</p>
+
+    <div class="btn-row">
+      <button class="btn-primary" id="btn-generate" onclick="generate()">Generate Config</button>
+      <button class="btn-secondary" id="btn-copy" onclick="copyConfig()" style="display:none">Copy</button>
+    </div>
+
+    <pre id="output" style="display:none; margin-top:1rem"></pre>
+  </div>
+
+  <!-- Instructions -->
+  <div class="card instructions">
+    <h2>How to Create a Gitea API Token</h2>
+    <ol>
+      <li>Log in to your Gitea instance.</li>
+      <li>Go to <strong>Settings</strong> &rarr; <strong>Applications</strong>.</li>
+      <li>Under <em>Manage Access Tokens</em>, enter a token name (e.g. <code>mcp-server</code>).</li>
+      <li>Select the permissions your agent needs (read/write on repos, issues, etc.).</li>
+      <li>Click <strong>Generate Token</strong> and copy the value immediately &mdash; it is shown only once.</li>
+      <li>Paste the token into the field above, click <strong>Generate Config</strong>, and add the result to your MCP client configuration file.</li>
+    </ol>
+  </div>
+
+  <!-- Where to put it -->
+  <div class="card instructions">
+    <h2>Where to Put the Config</h2>
+    <ol>
+      <li><strong>Claude Desktop</strong> &mdash; paste into <code>claude_desktop_config.json</code>.</li>
+      <li><strong>Cursor</strong> &mdash; paste into <code>.cursor/mcp.json</code> in your project root.</li>
+      <li><strong>Claude Code</strong> &mdash; paste into <code>.claude/settings.json</code> or use <code>claude mcp add</code>.</li>
+      <li>For other MCP clients, consult their documentation on where to place the server configuration.</li>
+    </ol>
+  </div>
+
+  <footer>
+    <a href="https://github.com/nikitatsym/gitea-mcp">gitea-mcp</a> &mdash; 186 tools, full Gitea API coverage for autonomous agents.
+  </footer>
+
+</div>
+
+<script>
+function generate() {
+  const url   = document.getElementById('gitea-url').value.trim().replace(/\/+$/, '');
+  const token = document.getElementById('gitea-token').value.trim();
+
+  if (!url) { alert('Please enter your Gitea URL.'); return; }
+  if (!token) { alert('Please enter your API token.'); return; }
+
+  const config = {
+    mcpServers: {
+      gitea: {
+        command: "uvx",
+        args: ["--refresh", "--extra-index-url", "https://nikitatsym.github.io/gitea-mcp/simple", "gitea-mcp"],
+        env: {
+          GITEA_URL: url,
+          GITEA_TOKEN: token
+        }
+      }
+    }
+  };
+
+  const output = document.getElementById('output');
+  const btnCopy = document.getElementById('btn-copy');
+  output.textContent = JSON.stringify(config, null, 2);
+  output.style.display = 'block';
+  btnCopy.style.display = 'inline-block';
+}
+
+function copyConfig() {
+  const text = document.getElementById('output').textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    const btn = document.getElementById('btn-copy');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(function() {
+      btn.textContent = 'Copy';
+      btn.classList.remove('copied');
+    }, 2000);
+  });
+}
+</script>
+</body>
+</html>
