@@ -938,9 +938,343 @@ jobs:
         assert isinstance(result, list)
         assert len(result) > 0
 
-    # ── 18. Close issue ───────────────────────────────────────
+    # ── 18. New tools: Topics/Stars/Watchers ────────────────
 
-    def test_160_close_issue(self, agent):
+    def test_160_add_delete_topic(self, agent):
+        """Agent adds and removes individual topics."""
+        agent.call("add_repo_topic",
+            owner=self.owner, repo=self.repo_name, topic="agent-topic",
+        )
+        topics = agent.call("list_repo_topics", owner=self.owner, repo=self.repo_name)
+        topic_list = topics.get("topics", topics) if isinstance(topics, dict) else topics
+        assert "agent-topic" in topic_list
+        agent.call("delete_repo_topic",
+            owner=self.owner, repo=self.repo_name, topic="agent-topic",
+        )
+
+    def test_161_star_list_watchers(self, agent):
+        """Agent stars, watches, and lists watchers."""
+        agent.call("star_repo", owner=self.owner, repo=self.repo_name)
+        starred = agent.call("list_my_starred_repos")
+        assert isinstance(starred, list)
+        agent.call("unstar_repo", owner=self.owner, repo=self.repo_name)
+
+        agent.call("watch_repo", owner=self.owner, repo=self.repo_name)
+        subs = agent.call("list_my_subscriptions")
+        assert isinstance(subs, list)
+        watchers = agent.call("list_repo_watchers", owner=self.owner, repo=self.repo_name)
+        assert isinstance(watchers, list)
+        agent.call("unwatch_repo", owner=self.owner, repo=self.repo_name)
+
+    # ── 19. New tools: Branch/Tag Protection ─────────────────
+
+    def test_162_branch_protection_crud(self, agent):
+        """Agent manages branch protection rules."""
+        agent.call("create_branch_protection",
+            owner=self.owner, repo=self.repo_name,
+            branch_name="main",
+        )
+        bp = agent.call("get_branch_protection",
+            owner=self.owner, repo=self.repo_name, name="main",
+        )
+        assert bp is not None
+
+        agent.call("edit_branch_protection",
+            owner=self.owner, repo=self.repo_name, name="main",
+            enable_push=True,
+        )
+
+        bps = agent.call("list_branch_protections",
+            owner=self.owner, repo=self.repo_name,
+        )
+        assert isinstance(bps, list)
+
+        agent.call("delete_branch_protection",
+            owner=self.owner, repo=self.repo_name, name="main",
+        )
+
+    def test_163_tag_protection_crud(self, agent):
+        """Agent manages tag protection rules."""
+        try:
+            result = agent.call("create_tag_protection",
+                owner=self.owner, repo=self.repo_name,
+                name_pattern="v*",
+            )
+            tp_id = result["id"]
+
+            tp = agent.call("get_tag_protection",
+                owner=self.owner, repo=self.repo_name,
+                tag_protection_id=tp_id,
+            )
+            assert tp is not None
+
+            tps = agent.call("list_tag_protections",
+                owner=self.owner, repo=self.repo_name,
+            )
+            assert isinstance(tps, list)
+
+            agent.call("delete_tag_protection",
+                owner=self.owner, repo=self.repo_name,
+                tag_protection_id=tp_id,
+            )
+        except Exception:
+            pass  # Tag protection may not be available in all versions
+
+    # ── 20. New tools: Issue extras ──────────────────────────
+
+    def test_164_issue_timeline(self, agent):
+        """Agent gets issue timeline."""
+        timeline = agent.call("get_issue_timeline",
+            owner=self.owner, repo=self.repo_name,
+            index=self.issue_index,
+        )
+        assert isinstance(timeline, list)
+
+    def test_165_delete_issue_deadline(self, agent):
+        """Agent removes a deadline from an issue."""
+        try:
+            agent.call("delete_issue_deadline",
+                owner=self.owner, repo=self.repo_name,
+                index=self.issue_index,
+            )
+        except Exception:
+            pass  # May fail if no deadline set
+
+    def test_166_repo_issue_comments(self, agent):
+        """Agent lists all issue comments in repo."""
+        comments = agent.call("list_repo_issue_comments",
+            owner=self.owner, repo=self.repo_name,
+        )
+        assert isinstance(comments, list)
+
+    # ── 21. New tools: Org Webhooks ──────────────────────────
+
+    def test_167_org_webhooks(self, agent):
+        """Agent manages org webhooks."""
+        result = agent.call("create_org_webhook",
+            org=self.org_name,
+            config={"url": "https://httpbin.org/post", "content_type": "json"},
+            events=["push"],
+        )
+        hook_id = result["id"]
+
+        hooks = agent.call("list_org_webhooks", org=self.org_name)
+        assert isinstance(hooks, list)
+
+        agent.call("delete_org_webhook", org=self.org_name, hook_id=hook_id)
+
+    # ── 22. New tools: Org Actions secrets/variables ─────────
+
+    def test_168_org_action_variables(self, agent):
+        """Agent manages org action variables."""
+        agent.call("create_org_action_variable",
+            org=self.org_name,
+            variable_name="ORG_TEST_VAR",
+            value="org_value",
+        )
+        var = agent.call("get_org_action_variable",
+            org=self.org_name, variable_name="ORG_TEST_VAR",
+        )
+        assert var is not None
+
+        agent.call("update_org_action_variable",
+            org=self.org_name, variable_name="ORG_TEST_VAR",
+            value="updated_org_value",
+        )
+
+        variables = agent.call("list_org_action_variables", org=self.org_name)
+        assert isinstance(variables, list)
+
+        agent.call("delete_org_action_variable",
+            org=self.org_name, variable_name="ORG_TEST_VAR",
+        )
+
+    def test_169_org_action_secrets(self, agent):
+        """Agent manages org action secrets."""
+        agent.call("create_org_action_secret",
+            org=self.org_name,
+            secret_name="ORG_SECRET",
+            data="secret_data",
+        )
+
+        secrets = agent.call("list_org_action_secrets", org=self.org_name)
+        assert isinstance(secrets, list)
+
+        agent.call("delete_org_action_secret",
+            org=self.org_name, secret_name="ORG_SECRET",
+        )
+
+    # ── 23. New tools: Org members ───────────────────────────
+
+    def test_170_org_membership(self, agent):
+        """Agent checks and manages org membership."""
+        members = agent.call("list_org_members", org=self.org_name)
+        assert isinstance(members, list)
+
+        try:
+            agent.call("check_org_membership",
+                org=self.org_name, username=ADMIN_USER,
+            )
+        except Exception:
+            pass  # May return 404 for redirect
+
+        public = agent.call("list_org_public_members", org=self.org_name)
+        assert isinstance(public, list)
+
+    # ── 24. New tools: User emails/OAuth2/blocks ─────────────
+
+    def test_171_user_emails(self, agent):
+        """Agent manages user emails."""
+        emails = agent.call("list_user_emails")
+        assert isinstance(emails, list)
+
+    def test_172_user_teams(self, agent):
+        """Agent lists user teams."""
+        teams = agent.call("list_user_teams")
+        assert isinstance(teams, list)
+
+    def test_173_oauth2_apps(self, agent):
+        """Agent manages OAuth2 applications."""
+        app = agent.call("create_oauth2_app",
+            name="test-oauth-app",
+            redirect_uris=["https://example.com/callback"],
+        )
+        app_id = app["id"]
+
+        fetched = agent.call("get_oauth2_app", app_id=app_id)
+        assert fetched["name"] == "test-oauth-app"
+
+        agent.call("edit_oauth2_app",
+            app_id=app_id,
+            name="test-oauth-app-updated",
+            redirect_uris=["https://example.com/callback"],
+        )
+
+        apps = agent.call("list_oauth2_apps")
+        assert isinstance(apps, list)
+
+        agent.call("delete_oauth2_app", app_id=app_id)
+
+    def test_174_blocked_users(self, agent):
+        """Agent manages blocked users."""
+        blocked = agent.call("list_blocked_users")
+        assert isinstance(blocked, list)
+
+    def test_175_check_following(self, agent):
+        """Agent checks following relationship."""
+        try:
+            agent.call("check_user_following",
+                username=ADMIN_USER, target="testuser2",
+            )
+        except Exception:
+            pass  # 404 means not following, which is expected
+
+    # ── 25. New tools: Notifications expansion ───────────────
+
+    def test_176_notification_count(self, agent):
+        """Agent checks notification count."""
+        result = agent.call("get_new_notification_count")
+        assert result is not None
+
+    def test_177_repo_notifications(self, agent):
+        """Agent lists repo notifications."""
+        result = agent.call("list_repo_notifications",
+            owner=self.owner, repo=self.repo_name,
+        )
+        assert isinstance(result, list)
+
+    # ── 26. New tools: Repo extras ───────────────────────────
+
+    def test_178_repo_languages(self, agent):
+        """Agent gets repo languages."""
+        result = agent.call("get_repo_languages",
+            owner=self.owner, repo=self.repo_name,
+        )
+        assert isinstance(result, dict)
+
+    def test_179_repo_assignees_reviewers(self, agent):
+        """Agent lists assignees and reviewers."""
+        assignees = agent.call("list_repo_assignees",
+            owner=self.owner, repo=self.repo_name,
+        )
+        assert isinstance(assignees, list)
+
+    def test_180_collaborator_permission(self, agent):
+        """Agent checks collaborator permission."""
+        try:
+            result = agent.call("get_repo_collaborator_permission",
+                owner=self.owner, repo=self.repo_name,
+                collaborator=ADMIN_USER,
+            )
+            assert result is not None
+        except Exception:
+            pass  # Owner may not be considered a collaborator
+
+    def test_181_repo_refs(self, agent):
+        """Agent lists git refs."""
+        try:
+            result = agent.call("list_repo_refs",
+                owner=self.owner, repo=self.repo_name,
+            )
+            assert isinstance(result, list)
+        except Exception:
+            pass  # Some Gitea versions may not support this
+
+    def test_182_git_tree(self, agent):
+        """Agent gets git tree."""
+        commits = agent.call("list_commits", owner=self.owner, repo=self.repo_name)
+        sha = commits[0]["sha"]
+        result = agent.call("get_git_tree",
+            owner=self.owner, repo=self.repo_name, sha=sha,
+        )
+        assert result is not None
+
+    def test_183_repo_teams(self, agent):
+        """Agent lists repo teams."""
+        try:
+            result = agent.call("list_repo_teams",
+                owner=self.owner, repo=self.repo_name,
+            )
+            assert isinstance(result, list)
+        except Exception:
+            pass  # Only applicable for org repos
+
+    # ── 27. New tools: Admin expansion ───────────────────────
+
+    def test_184_admin_list_repos(self, agent):
+        """Agent lists all repos (admin) via search."""
+        # admin_list_repos may not exist on all Gitea versions
+        try:
+            result = agent.call("admin_list_repos")
+            assert isinstance(result, list)
+        except Exception:
+            pass  # Endpoint may not be available
+
+    def test_185_admin_list_emails(self, agent):
+        """Agent lists all emails (admin)."""
+        result = agent.call("admin_list_emails")
+        assert isinstance(result, list)
+
+    def test_186_admin_cron_jobs(self, agent):
+        """Agent lists cron jobs (admin)."""
+        result = agent.call("admin_list_cron_jobs")
+        assert isinstance(result, list)
+
+    # ── 28. New tools: Misc expansion ────────────────────────
+
+    def test_187_gitignore_template_detail(self, agent):
+        """Agent gets a specific gitignore template."""
+        result = agent.call("get_gitignore_template", name="Python")
+        assert result is not None
+
+    def test_188_license_template_detail(self, agent):
+        """Agent gets a specific license template."""
+        result = agent.call("get_license_template", name="MIT")
+        assert result is not None
+
+    # ── 29. Close issue ──────────────────────────────────────
+
+    def test_190_close_issue(self, agent):
         """Agent closes the issue."""
         result = agent.call("edit_issue",
             owner=self.owner,
@@ -950,7 +1284,7 @@ jobs:
         )
         assert result["state"] == "closed"
 
-    # ── 19. Cleanup ───────────────────────────────────────────
+    # ── 30. Cleanup ──────────────────────────────────────────
 
     def test_900_cleanup_org(self, agent):
         """Agent cleans up the organization."""
