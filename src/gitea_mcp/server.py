@@ -20,6 +20,9 @@ def _get_client() -> GiteaClient:
 def _ok(data) -> str:
     if data is None:
         return json.dumps({"status": "ok"})
+    # Gitea search endpoints wrap results in {"ok": true, "data": [...]}
+    if isinstance(data, dict) and "ok" in data and "data" in data:
+        data = data["data"]
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
