@@ -108,6 +108,107 @@ def get_user_settings() -> str:
 
 
 @mcp.tool()
+def check_user_following(username: str, target: str) -> str:
+    """Check if a user is following another user."""
+    return _ok(_get_client().get(f"/users/{username}/following/{target}"))
+
+
+@mcp.tool()
+def list_user_emails() -> str:
+    """List the current user's email addresses."""
+    return _ok(_get_client().get("/user/emails"))
+
+
+@mcp.tool()
+def add_user_email(emails: list[str]) -> str:
+    """Add email addresses for the current user."""
+    return _ok(_get_client().post("/user/emails", json={"emails": emails}))
+
+
+@mcp.tool()
+def delete_user_email(emails: list[str]) -> str:
+    """Delete email addresses for the current user."""
+    return _ok(
+        _get_client()._json("DELETE", "/user/emails", json={"emails": emails})
+    )
+
+
+@mcp.tool()
+def list_user_teams() -> str:
+    """List teams the current user belongs to."""
+    return _ok(_get_client().paginate("/user/teams"))
+
+
+@mcp.tool()
+def list_oauth2_apps() -> str:
+    """List the current user's OAuth2 applications."""
+    return _ok(_get_client().paginate("/user/applications/oauth2"))
+
+
+@mcp.tool()
+def create_oauth2_app(
+    name: str,
+    redirect_uris: list[str],
+    confidential_client: Optional[bool] = None,
+) -> str:
+    """Create an OAuth2 application for the current user."""
+    body: dict = {"name": name, "redirect_uris": redirect_uris}
+    if confidential_client is not None:
+        body["confidential_client"] = confidential_client
+    return _ok(_get_client().post("/user/applications/oauth2", json=body))
+
+
+@mcp.tool()
+def get_oauth2_app(app_id: int) -> str:
+    """Get an OAuth2 application by ID."""
+    return _ok(_get_client().get(f"/user/applications/oauth2/{app_id}"))
+
+
+@mcp.tool()
+def edit_oauth2_app(
+    app_id: int,
+    name: Optional[str] = None,
+    redirect_uris: Optional[list[str]] = None,
+    confidential_client: Optional[bool] = None,
+) -> str:
+    """Edit an OAuth2 application."""
+    body: dict = {}
+    if name is not None:
+        body["name"] = name
+    if redirect_uris is not None:
+        body["redirect_uris"] = redirect_uris
+    if confidential_client is not None:
+        body["confidential_client"] = confidential_client
+    return _ok(
+        _get_client().patch(f"/user/applications/oauth2/{app_id}", json=body)
+    )
+
+
+@mcp.tool()
+def delete_oauth2_app(app_id: int) -> str:
+    """Delete an OAuth2 application."""
+    return _ok(_get_client().delete(f"/user/applications/oauth2/{app_id}"))
+
+
+@mcp.tool()
+def list_blocked_users() -> str:
+    """List users blocked by the current user."""
+    return _ok(_get_client().paginate("/user/blocks"))
+
+
+@mcp.tool()
+def block_user(username: str) -> str:
+    """Block a user."""
+    return _ok(_get_client().put(f"/user/blocks/{username}"))
+
+
+@mcp.tool()
+def unblock_user(username: str) -> str:
+    """Unblock a user."""
+    return _ok(_get_client().delete(f"/user/blocks/{username}"))
+
+
+@mcp.tool()
 def update_user_settings(
     description: Optional[str] = None,
     full_name: Optional[str] = None,
@@ -366,6 +467,80 @@ def unstar_repo(owner: str, repo: str) -> str:
     return _ok(_get_client().delete(f"/user/starred/{owner}/{repo}"))
 
 
+@mcp.tool()
+def list_my_starred_repos() -> str:
+    """List repositories starred by the current user."""
+    return _ok(_get_client().paginate("/user/starred"))
+
+
+@mcp.tool()
+def add_repo_topic(owner: str, repo: str, topic: str) -> str:
+    """Add a topic to a repository."""
+    return _ok(_get_client().put(f"/repos/{owner}/{repo}/topics/{topic}"))
+
+
+@mcp.tool()
+def delete_repo_topic(owner: str, repo: str, topic: str) -> str:
+    """Delete a topic from a repository."""
+    return _ok(_get_client().delete(f"/repos/{owner}/{repo}/topics/{topic}"))
+
+
+@mcp.tool()
+def list_repo_watchers(owner: str, repo: str) -> str:
+    """List users watching a repository."""
+    return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/subscribers"))
+
+
+@mcp.tool()
+def list_my_subscriptions() -> str:
+    """List repositories watched by the current user."""
+    return _ok(_get_client().paginate("/user/subscriptions"))
+
+
+@mcp.tool()
+def watch_repo(owner: str, repo: str) -> str:
+    """Watch a repository."""
+    return _ok(
+        _get_client().put(
+            f"/repos/{owner}/{repo}/subscription", json={"subscribed": True}
+        )
+    )
+
+
+@mcp.tool()
+def unwatch_repo(owner: str, repo: str) -> str:
+    """Unwatch a repository."""
+    return _ok(_get_client().delete(f"/repos/{owner}/{repo}/subscription"))
+
+
+@mcp.tool()
+def list_repo_teams(owner: str, repo: str) -> str:
+    """List teams that have access to a repository."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/teams"))
+
+
+@mcp.tool()
+def check_repo_collaborator(owner: str, repo: str, collaborator: str) -> str:
+    """Check if a user is a collaborator of a repository."""
+    return _ok(
+        _get_client().get(
+            f"/repos/{owner}/{repo}/collaborators/{collaborator}"
+        )
+    )
+
+
+@mcp.tool()
+def get_repo_collaborator_permission(
+    owner: str, repo: str, collaborator: str
+) -> str:
+    """Get a collaborator's permission level for a repository."""
+    return _ok(
+        _get_client().get(
+            f"/repos/{owner}/{repo}/collaborators/{collaborator}/permission"
+        )
+    )
+
+
 # ── Webhooks ─────────────────────────────────────────────────────────────────
 
 
@@ -428,6 +603,58 @@ def test_repo_webhook(owner: str, repo: str, hook_id: int) -> str:
     return _ok(_get_client().post(f"/repos/{owner}/{repo}/hooks/{hook_id}/tests"))
 
 
+# ── Org Webhooks ─────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def list_org_webhooks(org: str) -> str:
+    """List webhooks for an organization."""
+    return _ok(_get_client().paginate(f"/orgs/{org}/hooks"))
+
+
+@mcp.tool()
+def create_org_webhook(
+    org: str,
+    config: dict,
+    events: list[str],
+    hook_type: str = "gitea",
+    active: bool = True,
+) -> str:
+    """Create a webhook for an organization."""
+    body: dict = {
+        "type": hook_type,
+        "config": config,
+        "events": events,
+        "active": active,
+    }
+    return _ok(_get_client().post(f"/orgs/{org}/hooks", json=body))
+
+
+@mcp.tool()
+def edit_org_webhook(
+    org: str,
+    hook_id: int,
+    config: Optional[dict] = None,
+    events: Optional[list[str]] = None,
+    active: Optional[bool] = None,
+) -> str:
+    """Edit an organization webhook."""
+    body: dict = {}
+    if config is not None:
+        body["config"] = config
+    if events is not None:
+        body["events"] = events
+    if active is not None:
+        body["active"] = active
+    return _ok(_get_client().patch(f"/orgs/{org}/hooks/{hook_id}", json=body))
+
+
+@mcp.tool()
+def delete_org_webhook(org: str, hook_id: int) -> str:
+    """Delete an organization webhook."""
+    return _ok(_get_client().delete(f"/orgs/{org}/hooks/{hook_id}"))
+
+
 # ── Deploy Keys ──────────────────────────────────────────────────────────────
 
 
@@ -448,6 +675,12 @@ def create_deploy_key(
     """Add a deploy key to a repository."""
     body: dict = {"title": title, "key": key, "read_only": read_only}
     return _ok(_get_client().post(f"/repos/{owner}/{repo}/keys", json=body))
+
+
+@mcp.tool()
+def get_deploy_key(owner: str, repo: str, key_id: int) -> str:
+    """Get a deploy key by ID."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/keys/{key_id}"))
 
 
 @mcp.tool()
@@ -667,10 +900,129 @@ def create_branch_protection(
 
 
 @mcp.tool()
+def get_branch_protection(owner: str, repo: str, name: str) -> str:
+    """Get a branch protection rule by name."""
+    return _ok(
+        _get_client().get(f"/repos/{owner}/{repo}/branch_protections/{name}")
+    )
+
+
+@mcp.tool()
+def edit_branch_protection(
+    owner: str,
+    repo: str,
+    name: str,
+    enable_push: Optional[bool] = None,
+    enable_push_whitelist: Optional[bool] = None,
+    push_whitelist_usernames: Optional[list[str]] = None,
+    enable_merge_whitelist: Optional[bool] = None,
+    merge_whitelist_usernames: Optional[list[str]] = None,
+    required_approvals: Optional[int] = None,
+    enable_status_check: Optional[bool] = None,
+    status_check_contexts: Optional[list[str]] = None,
+) -> str:
+    """Edit a branch protection rule."""
+    body: dict = {}
+    if enable_push is not None:
+        body["enable_push"] = enable_push
+    if enable_push_whitelist is not None:
+        body["enable_push_whitelist"] = enable_push_whitelist
+    if push_whitelist_usernames is not None:
+        body["push_whitelist_usernames"] = push_whitelist_usernames
+    if enable_merge_whitelist is not None:
+        body["enable_merge_whitelist"] = enable_merge_whitelist
+    if merge_whitelist_usernames is not None:
+        body["merge_whitelist_usernames"] = merge_whitelist_usernames
+    if required_approvals is not None:
+        body["required_approvals"] = required_approvals
+    if enable_status_check is not None:
+        body["enable_status_check"] = enable_status_check
+    if status_check_contexts is not None:
+        body["status_check_contexts"] = status_check_contexts
+    return _ok(
+        _get_client().patch(
+            f"/repos/{owner}/{repo}/branch_protections/{name}", json=body
+        )
+    )
+
+
+@mcp.tool()
 def delete_branch_protection(owner: str, repo: str, name: str) -> str:
     """Delete a branch protection rule by name."""
     return _ok(
         _get_client().delete(f"/repos/{owner}/{repo}/branch_protections/{name}")
+    )
+
+
+# ── Tag Protections ──────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def list_tag_protections(owner: str, repo: str) -> str:
+    """List tag protections for a repository."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/tag_protections"))
+
+
+@mcp.tool()
+def create_tag_protection(
+    owner: str,
+    repo: str,
+    name_pattern: str,
+    whitelist_usernames: Optional[list[str]] = None,
+    whitelist_teams: Optional[list[str]] = None,
+) -> str:
+    """Create a tag protection rule for a repository."""
+    body: dict = {"name_pattern": name_pattern}
+    if whitelist_usernames is not None:
+        body["whitelist_usernames"] = whitelist_usernames
+    if whitelist_teams is not None:
+        body["whitelist_teams"] = whitelist_teams
+    return _ok(
+        _get_client().post(f"/repos/{owner}/{repo}/tag_protections", json=body)
+    )
+
+
+@mcp.tool()
+def get_tag_protection(owner: str, repo: str, tag_protection_id: int) -> str:
+    """Get a tag protection rule by ID."""
+    return _ok(
+        _get_client().get(
+            f"/repos/{owner}/{repo}/tag_protections/{tag_protection_id}"
+        )
+    )
+
+
+@mcp.tool()
+def edit_tag_protection(
+    owner: str,
+    repo: str,
+    tag_protection_id: int,
+    name_pattern: Optional[str] = None,
+    whitelist_usernames: Optional[list[str]] = None,
+    whitelist_teams: Optional[list[str]] = None,
+) -> str:
+    """Edit a tag protection rule."""
+    body: dict = {}
+    if name_pattern is not None:
+        body["name_pattern"] = name_pattern
+    if whitelist_usernames is not None:
+        body["whitelist_usernames"] = whitelist_usernames
+    if whitelist_teams is not None:
+        body["whitelist_teams"] = whitelist_teams
+    return _ok(
+        _get_client().patch(
+            f"/repos/{owner}/{repo}/tag_protections/{tag_protection_id}", json=body
+        )
+    )
+
+
+@mcp.tool()
+def delete_tag_protection(owner: str, repo: str, tag_protection_id: int) -> str:
+    """Delete a tag protection rule."""
+    return _ok(
+        _get_client().delete(
+            f"/repos/{owner}/{repo}/tag_protections/{tag_protection_id}"
+        )
     )
 
 
@@ -1198,6 +1550,60 @@ def set_issue_deadline(owner: str, repo: str, index: int, due_date: str) -> str:
         _get_client().post(
             f"/repos/{owner}/{repo}/issues/{index}/deadline",
             json={"due_date": due_date},
+        )
+    )
+
+
+@mcp.tool()
+def delete_issue_deadline(owner: str, repo: str, index: int) -> str:
+    """Remove a deadline from an issue."""
+    return _ok(
+        _get_client().delete(f"/repos/{owner}/{repo}/issues/{index}/deadline")
+    )
+
+
+@mcp.tool()
+def clear_issue_labels(owner: str, repo: str, index: int) -> str:
+    """Remove all labels from an issue."""
+    return _ok(
+        _get_client().delete(f"/repos/{owner}/{repo}/issues/{index}/labels")
+    )
+
+
+@mcp.tool()
+def get_issue_timeline(owner: str, repo: str, index: int) -> str:
+    """Get the timeline of an issue (comments, events, label changes, etc.)."""
+    return _ok(
+        _get_client().paginate(f"/repos/{owner}/{repo}/issues/{index}/timeline")
+    )
+
+
+@mcp.tool()
+def list_repo_issue_comments(
+    owner: str,
+    repo: str,
+    since: Optional[str] = None,
+    before: Optional[str] = None,
+) -> str:
+    """List all comments in a repository (across all issues)."""
+    params: dict = {}
+    if since is not None:
+        params["since"] = since
+    if before is not None:
+        params["before"] = before
+    return _ok(
+        _get_client().paginate(
+            f"/repos/{owner}/{repo}/issues/comments", params=params or None
+        )
+    )
+
+
+@mcp.tool()
+def delete_stopwatch(owner: str, repo: str, index: int) -> str:
+    """Delete a stopwatch on an issue."""
+    return _ok(
+        _get_client().delete(
+            f"/repos/{owner}/{repo}/issues/{index}/stopwatch/delete"
         )
     )
 
@@ -1877,6 +2283,79 @@ def list_org_members(org: str) -> str:
     return _ok(_get_client().paginate(f"/orgs/{org}/members"))
 
 
+@mcp.tool()
+def check_org_membership(org: str, username: str) -> str:
+    """Check if a user is a member of an organization."""
+    return _ok(_get_client().get(f"/orgs/{org}/members/{username}"))
+
+
+@mcp.tool()
+def remove_org_member(org: str, username: str) -> str:
+    """Remove a member from an organization."""
+    return _ok(_get_client().delete(f"/orgs/{org}/members/{username}"))
+
+
+@mcp.tool()
+def list_org_public_members(org: str) -> str:
+    """List public members of an organization."""
+    return _ok(_get_client().paginate(f"/orgs/{org}/public_members"))
+
+
+@mcp.tool()
+def check_org_public_member(org: str, username: str) -> str:
+    """Check if a user is a public member of an organization."""
+    return _ok(_get_client().get(f"/orgs/{org}/public_members/{username}"))
+
+
+@mcp.tool()
+def set_org_public_member(org: str, username: str) -> str:
+    """Publicize a user's membership in an organization."""
+    return _ok(_get_client().put(f"/orgs/{org}/public_members/{username}"))
+
+
+@mcp.tool()
+def remove_org_public_member(org: str, username: str) -> str:
+    """Conceal a user's membership in an organization."""
+    return _ok(_get_client().delete(f"/orgs/{org}/public_members/{username}"))
+
+
+@mcp.tool()
+def create_org_repo(
+    org: str,
+    name: str,
+    description: Optional[str] = None,
+    private: Optional[bool] = None,
+    auto_init: Optional[bool] = None,
+    gitignores: Optional[str] = None,
+    license: Optional[str] = None,
+    readme: Optional[str] = None,
+    default_branch: Optional[str] = None,
+) -> str:
+    """Create a repository in an organization."""
+    body: dict = {"name": name}
+    if description is not None:
+        body["description"] = description
+    if private is not None:
+        body["private"] = private
+    if auto_init is not None:
+        body["auto_init"] = auto_init
+    if gitignores is not None:
+        body["gitignores"] = gitignores
+    if license is not None:
+        body["license"] = license
+    if readme is not None:
+        body["readme"] = readme
+    if default_branch is not None:
+        body["default_branch"] = default_branch
+    return _ok(_get_client().post(f"/orgs/{org}/repos", json=body))
+
+
+@mcp.tool()
+def list_user_orgs(username: str) -> str:
+    """List organizations for a specific user."""
+    return _ok(_get_client().paginate(f"/users/{username}/orgs"))
+
+
 # ── Teams ────────────────────────────────────────────────────────────────────
 
 
@@ -1968,6 +2447,18 @@ def add_team_repo(team_id: int, org: str, repo: str) -> str:
     return _ok(_get_client().put(f"/teams/{team_id}/repos/{org}/{repo}"))
 
 
+@mcp.tool()
+def remove_team_repo(team_id: int, org: str, repo: str) -> str:
+    """Remove a repository from a team."""
+    return _ok(_get_client().delete(f"/teams/{team_id}/repos/{org}/{repo}"))
+
+
+@mcp.tool()
+def check_team_repo(team_id: int, org: str, repo: str) -> str:
+    """Check if a repository belongs to a team."""
+    return _ok(_get_client().get(f"/teams/{team_id}/repos/{org}/{repo}"))
+
+
 # ── Org Labels ───────────────────────────────────────────────────────────────
 
 
@@ -2057,6 +2548,49 @@ def get_notification_thread(thread_id: int) -> str:
 def mark_notification_read(thread_id: int) -> str:
     """Mark a notification thread as read."""
     return _ok(_get_client().patch(f"/notifications/threads/{thread_id}"))
+
+
+@mcp.tool()
+def list_repo_notifications(
+    owner: str,
+    repo: str,
+    all: Optional[bool] = None,
+    status_types: Optional[list[str]] = None,
+) -> str:
+    """List notifications for a repository."""
+    params: dict = {}
+    if all is not None:
+        params["all"] = all
+    if status_types is not None:
+        params["status-types"] = status_types
+    return _ok(
+        _get_client().paginate(
+            f"/repos/{owner}/{repo}/notifications", params=params or None
+        )
+    )
+
+
+@mcp.tool()
+def mark_repo_notifications_read(
+    owner: str,
+    repo: str,
+    last_read_at: Optional[str] = None,
+) -> str:
+    """Mark all notifications in a repository as read."""
+    body: dict = {}
+    if last_read_at is not None:
+        body["last_read_at"] = last_read_at
+    return _ok(
+        _get_client().put(
+            f"/repos/{owner}/{repo}/notifications", json=body
+        )
+    )
+
+
+@mcp.tool()
+def get_new_notification_count() -> str:
+    """Get the count of unread notifications."""
+    return _ok(_get_client().get("/notifications/new"))
 
 
 # ── Wiki ─────────────────────────────────────────────────────────────────────
@@ -2261,6 +2795,316 @@ def admin_run_cron_job(task_name: str) -> str:
     return _ok(_get_client().post(f"/admin/cron/{task_name}"))
 
 
+@mcp.tool()
+def admin_list_repos(
+    limit: Optional[int] = None,
+    page: Optional[int] = None,
+) -> str:
+    """List all repositories (admin only)."""
+    params: dict = {}
+    if limit is not None:
+        params["limit"] = limit
+    if page is not None:
+        params["page"] = page
+    return _ok(_get_client().paginate("/admin/repos", params=params or None))
+
+
+@mcp.tool()
+def admin_create_org(
+    username: str,
+    owner_name: str,
+    full_name: Optional[str] = None,
+    description: Optional[str] = None,
+    website: Optional[str] = None,
+    visibility: Optional[str] = None,
+) -> str:
+    """Create an organization (admin only). owner_name is the user who will own the org."""
+    body: dict = {"username": username}
+    if full_name is not None:
+        body["full_name"] = full_name
+    if description is not None:
+        body["description"] = description
+    if website is not None:
+        body["website"] = website
+    if visibility is not None:
+        body["visibility"] = visibility
+    return _ok(_get_client().post(f"/admin/users/{owner_name}/orgs", json=body))
+
+
+@mcp.tool()
+def admin_create_repo_for_user(
+    username: str,
+    name: str,
+    description: Optional[str] = None,
+    private: Optional[bool] = None,
+    auto_init: Optional[bool] = None,
+) -> str:
+    """Create a repository for a user (admin only)."""
+    body: dict = {"name": name}
+    if description is not None:
+        body["description"] = description
+    if private is not None:
+        body["private"] = private
+    if auto_init is not None:
+        body["auto_init"] = auto_init
+    return _ok(_get_client().post(f"/admin/users/{username}/repos", json=body))
+
+
+@mcp.tool()
+def admin_rename_user(username: str, new_username: str) -> str:
+    """Rename a user (admin only)."""
+    return _ok(
+        _get_client().post(
+            f"/admin/users/{username}/rename",
+            json={"new_username": new_username},
+        )
+    )
+
+
+@mcp.tool()
+def admin_create_user_public_key(username: str, title: str, key: str) -> str:
+    """Add a public key for a user (admin only)."""
+    return _ok(
+        _get_client().post(
+            f"/admin/users/{username}/keys",
+            json={"title": title, "key": key},
+        )
+    )
+
+
+@mcp.tool()
+def admin_delete_user_public_key(username: str, key_id: int) -> str:
+    """Delete a public key for a user (admin only)."""
+    return _ok(_get_client().delete(f"/admin/users/{username}/keys/{key_id}"))
+
+
+@mcp.tool()
+def admin_list_unadopted_repos() -> str:
+    """List unadopted repositories (admin only)."""
+    return _ok(_get_client().paginate("/admin/unadopted"))
+
+
+@mcp.tool()
+def admin_adopt_repo(owner: str, repo: str) -> str:
+    """Adopt an unadopted repository (admin only)."""
+    return _ok(_get_client().post(f"/admin/unadopted/{owner}/{repo}"))
+
+
+@mcp.tool()
+def admin_delete_unadopted_repo(owner: str, repo: str) -> str:
+    """Delete an unadopted repository (admin only)."""
+    return _ok(_get_client().delete(f"/admin/unadopted/{owner}/{repo}"))
+
+
+@mcp.tool()
+def admin_list_emails(
+    limit: Optional[int] = None,
+    page: Optional[int] = None,
+) -> str:
+    """List all emails (admin only)."""
+    params: dict = {}
+    if limit is not None:
+        params["limit"] = limit
+    if page is not None:
+        params["page"] = page
+    return _ok(_get_client().paginate("/admin/emails", params=params or None))
+
+
+@mcp.tool()
+def admin_search_emails(query: str) -> str:
+    """Search emails (admin only)."""
+    return _ok(_get_client().paginate("/admin/emails/search", params={"q": query}))
+
+
+# ── Actions Runners ──────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def list_repo_runners(owner: str, repo: str) -> str:
+    """List action runners for a repository."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/actions/runners"))
+
+
+@mcp.tool()
+def get_repo_runner(owner: str, repo: str, runner_id: int) -> str:
+    """Get an action runner for a repository."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/actions/runners/{runner_id}"))
+
+
+@mcp.tool()
+def delete_repo_runner(owner: str, repo: str, runner_id: int) -> str:
+    """Delete an action runner from a repository."""
+    return _ok(_get_client().delete(f"/repos/{owner}/{repo}/actions/runners/{runner_id}"))
+
+
+@mcp.tool()
+def list_org_runners(org: str) -> str:
+    """List action runners for an organization."""
+    return _ok(_get_client().get(f"/orgs/{org}/actions/runners"))
+
+
+@mcp.tool()
+def get_org_runner(org: str, runner_id: int) -> str:
+    """Get an action runner for an organization."""
+    return _ok(_get_client().get(f"/orgs/{org}/actions/runners/{runner_id}"))
+
+
+@mcp.tool()
+def delete_org_runner(org: str, runner_id: int) -> str:
+    """Delete an action runner from an organization."""
+    return _ok(_get_client().delete(f"/orgs/{org}/actions/runners/{runner_id}"))
+
+
+@mcp.tool()
+def list_admin_runners() -> str:
+    """List all action runners (admin only)."""
+    return _ok(_get_client().get("/admin/runners"))
+
+
+@mcp.tool()
+def get_admin_runner(runner_id: int) -> str:
+    """Get an action runner (admin only)."""
+    return _ok(_get_client().get(f"/admin/runners/{runner_id}"))
+
+
+@mcp.tool()
+def delete_admin_runner(runner_id: int) -> str:
+    """Delete an action runner (admin only)."""
+    return _ok(_get_client().delete(f"/admin/runners/{runner_id}"))
+
+
+# ── Actions - Org Secrets/Variables ──────────────────────────────────────
+
+
+@mcp.tool()
+def list_org_action_secrets(org: str) -> str:
+    """List action secrets for an organization."""
+    return _ok(_get_client().paginate(f"/orgs/{org}/actions/secrets"))
+
+
+@mcp.tool()
+def create_org_action_secret(org: str, secret_name: str, data: str) -> str:
+    """Create or update an action secret in an organization."""
+    return _ok(
+        _get_client().put(
+            f"/orgs/{org}/actions/secrets/{secret_name}",
+            json={"data": data},
+        )
+    )
+
+
+@mcp.tool()
+def delete_org_action_secret(org: str, secret_name: str) -> str:
+    """Delete an action secret from an organization."""
+    return _ok(_get_client().delete(f"/orgs/{org}/actions/secrets/{secret_name}"))
+
+
+@mcp.tool()
+def list_org_action_variables(org: str) -> str:
+    """List action variables for an organization."""
+    return _ok(_get_client().paginate(f"/orgs/{org}/actions/variables"))
+
+
+@mcp.tool()
+def get_org_action_variable(org: str, variable_name: str) -> str:
+    """Get an action variable for an organization."""
+    return _ok(_get_client().get(f"/orgs/{org}/actions/variables/{variable_name}"))
+
+
+@mcp.tool()
+def create_org_action_variable(org: str, variable_name: str, value: str) -> str:
+    """Create an action variable in an organization."""
+    return _ok(
+        _get_client().post(
+            f"/orgs/{org}/actions/variables/{variable_name}",
+            json={"value": value},
+        )
+    )
+
+
+@mcp.tool()
+def update_org_action_variable(org: str, variable_name: str, value: str) -> str:
+    """Update an action variable in an organization."""
+    return _ok(
+        _get_client().put(
+            f"/orgs/{org}/actions/variables/{variable_name}",
+            json={"value": value},
+        )
+    )
+
+
+@mcp.tool()
+def delete_org_action_variable(org: str, variable_name: str) -> str:
+    """Delete an action variable from an organization."""
+    return _ok(_get_client().delete(f"/orgs/{org}/actions/variables/{variable_name}"))
+
+
+# ── Actions - User Secrets/Variables ─────────────────────────────────────
+
+
+@mcp.tool()
+def list_user_action_secrets() -> str:
+    """List action secrets for the current user."""
+    return _ok(_get_client().paginate("/user/actions/secrets"))
+
+
+@mcp.tool()
+def create_user_action_secret(secret_name: str, data: str) -> str:
+    """Create or update an action secret for the current user."""
+    return _ok(
+        _get_client().put(
+            f"/user/actions/secrets/{secret_name}",
+            json={"data": data},
+        )
+    )
+
+
+@mcp.tool()
+def delete_user_action_secret(secret_name: str) -> str:
+    """Delete an action secret for the current user."""
+    return _ok(_get_client().delete(f"/user/actions/secrets/{secret_name}"))
+
+
+@mcp.tool()
+def list_user_action_variables() -> str:
+    """List action variables for the current user."""
+    return _ok(_get_client().paginate("/user/actions/variables"))
+
+
+@mcp.tool()
+def get_user_action_variable(variable_name: str) -> str:
+    """Get an action variable for the current user."""
+    return _ok(_get_client().get(f"/user/actions/variables/{variable_name}"))
+
+
+@mcp.tool()
+def create_user_action_variable(variable_name: str, value: str) -> str:
+    """Create an action variable for the current user."""
+    return _ok(
+        _get_client().post(
+            f"/user/actions/variables/{variable_name}",
+            json={"value": value},
+        )
+    )
+
+
+@mcp.tool()
+def update_user_action_variable(variable_name: str, value: str) -> str:
+    """Update an action variable for the current user."""
+    return _ok(
+        _get_client().put(
+            f"/user/actions/variables/{variable_name}",
+            json={"value": value},
+        )
+    )
+
+
+@mcp.tool()
+def delete_user_action_variable(variable_name: str) -> str:
+    """Delete an action variable for the current user."""
+    return _ok(_get_client().delete(f"/user/actions/variables/{variable_name}"))
+
+
 # ── Misc ─────────────────────────────────────────────────────────────────────
 
 
@@ -2298,3 +3142,195 @@ def list_gitignore_templates() -> str:
 def list_license_templates() -> str:
     """List available license templates."""
     return _ok(_get_client().get("/licenses"))
+
+
+@mcp.tool()
+def get_signing_key() -> str:
+    """Get the default signing key for the Gitea instance."""
+    return _get_client().get_text("/signing-key.gpg")
+
+
+@mcp.tool()
+def get_nodeinfo() -> str:
+    """Get NodeInfo for the Gitea instance."""
+    return _ok(_get_client().get("/nodeinfo"))
+
+
+@mcp.tool()
+def get_gitignore_template(name: str) -> str:
+    """Get a specific .gitignore template by name."""
+    return _ok(_get_client().get(f"/gitignore/templates/{name}"))
+
+
+@mcp.tool()
+def get_license_template(name: str) -> str:
+    """Get a specific license template by name."""
+    return _ok(_get_client().get(f"/licenses/{name}"))
+
+
+@mcp.tool()
+def list_package_versions(owner: str, type: str, name: str) -> str:
+    """List versions of a package."""
+    return _ok(
+        _get_client().paginate(f"/packages/{owner}/{type}/{name}")
+    )
+
+
+@mcp.tool()
+def get_repo_languages(owner: str, repo: str) -> str:
+    """Get the languages used in a repository."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/languages"))
+
+
+@mcp.tool()
+def list_repo_activities(
+    owner: str,
+    repo: str,
+    page: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> str:
+    """List activity feeds for a repository."""
+    params: dict = {}
+    if page is not None:
+        params["page"] = page
+    if limit is not None:
+        params["limit"] = limit
+    return _ok(
+        _get_client().paginate(
+            f"/repos/{owner}/{repo}/activities/feeds", params=params or None
+        )
+    )
+
+
+@mcp.tool()
+def get_repo_git_notes(owner: str, repo: str, sha: str) -> str:
+    """Get a git note for a commit."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/git/notes/{sha}"))
+
+
+@mcp.tool()
+def get_repo_archive(owner: str, repo: str, archive: str) -> str:
+    """Get an archive of a repository. archive should be like 'main.tar.gz' or 'main.zip'."""
+    return _get_client().get_text(f"/repos/{owner}/{repo}/archive/{archive}")
+
+
+@mcp.tool()
+def list_repo_refs(owner: str, repo: str, ref_type: str = "") -> str:
+    """List git references in a repository. ref_type can be empty, 'heads', or 'tags'."""
+    path = f"/repos/{owner}/{repo}/git/refs"
+    if ref_type:
+        path = f"{path}/{ref_type}"
+    return _ok(_get_client().get(path))
+
+
+@mcp.tool()
+def get_git_tree(
+    owner: str,
+    repo: str,
+    sha: str,
+    recursive: Optional[bool] = None,
+) -> str:
+    """Get the tree for a commit SHA."""
+    params: dict = {}
+    if recursive is not None:
+        params["recursive"] = recursive
+    return _ok(
+        _get_client().get(
+            f"/repos/{owner}/{repo}/git/trees/{sha}", params=params or None
+        )
+    )
+
+
+@mcp.tool()
+def transfer_repo(
+    owner: str,
+    repo: str,
+    new_owner: str,
+    team_ids: Optional[list[int]] = None,
+) -> str:
+    """Transfer a repository to another owner."""
+    body: dict = {"new_owner": new_owner}
+    if team_ids is not None:
+        body["team_ids"] = team_ids
+    return _ok(
+        _get_client().post(f"/repos/{owner}/{repo}/transfer", json=body)
+    )
+
+
+@mcp.tool()
+def create_repo_from_template(
+    template_owner: str,
+    template_repo: str,
+    name: str,
+    owner: str,
+    description: Optional[str] = None,
+    private: Optional[bool] = None,
+    git_content: Optional[bool] = None,
+    topics: Optional[bool] = None,
+    labels: Optional[bool] = None,
+) -> str:
+    """Create a repository from a template."""
+    body: dict = {"name": name, "owner": owner}
+    if description is not None:
+        body["description"] = description
+    if private is not None:
+        body["private"] = private
+    if git_content is not None:
+        body["git_content"] = git_content
+    if topics is not None:
+        body["topics"] = topics
+    if labels is not None:
+        body["labels"] = labels
+    return _ok(
+        _get_client().post(
+            f"/repos/{template_owner}/{template_repo}/generate", json=body
+        )
+    )
+
+
+@mcp.tool()
+def list_repo_assignees(owner: str, repo: str) -> str:
+    """List users who can be assigned to issues in a repository."""
+    return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/assignees"))
+
+
+@mcp.tool()
+def list_repo_reviewers(owner: str, repo: str) -> str:
+    """List users who can review pull requests in a repository."""
+    return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/reviewers"))
+
+
+@mcp.tool()
+def get_pull_review_comments(
+    owner: str, repo: str, index: int, review_id: int
+) -> str:
+    """List comments on a pull request review."""
+    return _ok(
+        _get_client().paginate(
+            f"/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}/comments"
+        )
+    )
+
+
+@mcp.tool()
+def delete_pull_review(owner: str, repo: str, index: int, review_id: int) -> str:
+    """Delete a pull request review."""
+    return _ok(
+        _get_client().delete(
+            f"/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}"
+        )
+    )
+
+
+@mcp.tool()
+def remove_pull_reviewers(
+    owner: str, repo: str, index: int, reviewers: list[str]
+) -> str:
+    """Remove reviewers from a pull request."""
+    return _ok(
+        _get_client()._json(
+            "DELETE",
+            f"/repos/{owner}/{repo}/pulls/{index}/requested_reviewers",
+            json={"reviewers": reviewers},
+        )
+    )
