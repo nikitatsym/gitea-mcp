@@ -2958,19 +2958,61 @@ def delete_org_runner(org: str, runner_id: int) -> str:
 @mcp.tool()
 def list_admin_runners() -> str:
     """List all action runners (admin only)."""
-    return _ok(_get_client().get("/admin/runners"))
+    return _ok(_get_client().get("/admin/actions/runners"))
 
 
 @mcp.tool()
 def get_admin_runner(runner_id: int) -> str:
     """Get an action runner (admin only)."""
-    return _ok(_get_client().get(f"/admin/runners/{runner_id}"))
+    return _ok(_get_client().get(f"/admin/actions/runners/{runner_id}"))
 
 
 @mcp.tool()
 def delete_admin_runner(runner_id: int) -> str:
     """Delete an action runner (admin only)."""
-    return _ok(_get_client().delete(f"/admin/runners/{runner_id}"))
+    return _ok(_get_client().delete(f"/admin/actions/runners/{runner_id}"))
+
+
+@mcp.tool()
+def create_admin_runner_token() -> str:
+    """Get a global actions runner registration token (admin only)."""
+    return _ok(_get_client().post("/admin/actions/runners/registration-token"))
+
+
+@mcp.tool()
+def list_user_runners() -> str:
+    """List action runners for the authenticated user."""
+    return _ok(_get_client().get("/user/actions/runners"))
+
+
+@mcp.tool()
+def get_user_runner(runner_id: int) -> str:
+    """Get an action runner for the authenticated user."""
+    return _ok(_get_client().get(f"/user/actions/runners/{runner_id}"))
+
+
+@mcp.tool()
+def delete_user_runner(runner_id: int) -> str:
+    """Delete an action runner for the authenticated user."""
+    return _ok(_get_client().delete(f"/user/actions/runners/{runner_id}"))
+
+
+@mcp.tool()
+def create_user_runner_token() -> str:
+    """Get a user-level actions runner registration token."""
+    return _ok(_get_client().post("/user/actions/runners/registration-token"))
+
+
+@mcp.tool()
+def create_repo_runner_token(owner: str, repo: str) -> str:
+    """Get a repo-level actions runner registration token."""
+    return _ok(_get_client().post(f"/repos/{owner}/{repo}/actions/runners/registration-token"))
+
+
+@mcp.tool()
+def create_org_runner_token(org: str) -> str:
+    """Get an org-level actions runner registration token."""
+    return _ok(_get_client().post(f"/orgs/{org}/actions/runners/registration-token"))
 
 
 # ── Actions - Org Secrets/Variables ──────────────────────────────────────
