@@ -1,4 +1,4 @@
-"""Compact mode: single gitea_api meta-tool with auto-generated help."""
+"""Compact mode: 6 meta-tools with auto-generated help."""
 
 import base64
 import json
@@ -396,29 +396,7 @@ if _extra:
     )
 
 
-# ── Auto-generate help text ──────────────────────────────────────────
-def _build_help() -> str:
-    lines = [
-        "Gitea REST API -- call gitea_api(method, path, params)",
-        "",
-        "NOTES:",
-        "  - params is a JSON string: query params for GET, body for POST/PUT/PATCH",
-        "  - File/wiki content: pass plain text, auto-base64 encoded",
-        "  - Pagination: pass {\"page\":N,\"limit\":N} in params",
-        "",
-    ]
-    for category, ops in _ENDPOINTS.items():
-        lines.append(f"{category.upper()}")
-        for name, (method, path) in ops.items():
-            desc = _TOOL_DESCS.get(name, "")
-            lines.append(f"  {method:6s} {path} -- {desc}")
-        lines.append("")
-    return "\n".join(lines)
-
-
-HELP_TEXT = _build_help()
-
-# ── Text-response path patterns (return raw text, not JSON) ──────────
+# ── Helpers ───────────────────────────────────────────────────────────
 _TEXT_PATTERNS = ("/raw/", ".diff", "/logs", "/signing-key.gpg", "/archive/")
 
 
@@ -444,16 +422,69 @@ def _get_client() -> GiteaClient:
     return _client
 
 
-# ── Meta-tool ─────────────────────────────────────────────────────────
-@mcp.tool()
-def gitea_api(method: str, path: str, params: str = "{}") -> str:
-    """Call Gitea REST API. method='help' lists all endpoints."""
-    if method.lower() == "help":
-        return HELP_TEXT
+def _is_admin(path: str) -> bool:
+    return path.startswith("/admin/")
 
+
+# ── Auto-generate help text ──────────────────────────────────────────
+def _build_help(header: str, filter_fn) -> str:
+    """Build help for endpoints where filter_fn(method, path) is True."""
+    lines = [
+        header,
+        "",
+        "NOTES:",
+        "  - params is a JSON string: query params for GET, body for POST/PUT/PATCH",
+        "  - File/wiki content: pass plain text, auto-base64 encoded",
+        "  - Pagination: pass {\"page\":N,\"limit\":N} in params",
+        "",
+    ]
+    for category, ops in _ENDPOINTS.items():
+        matching = [
+            (name, m, p)
+            for name, (m, p) in ops.items()
+            if filter_fn(m, p)
+        ]
+        if not matching:
+            continue
+        lines.append(f"{category.upper()}")
+        for name, method, path in matching:
+            desc = _TOOL_DESCS.get(name, "")
+            lines.append(f"  {method:6s} {path} -- {desc}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+_HELP_READ = _build_help(
+    "gitea_read(path, params) -- GET non-admin endpoints",
+    lambda m, p: m == "GET" and not _is_admin(p),
+)
+_HELP_CREATE = _build_help(
+    "gitea_create(path, params) -- POST non-admin endpoints",
+    lambda m, p: m == "POST" and not _is_admin(p),
+)
+_HELP_UPDATE = _build_help(
+    "gitea_update(method, path, params) -- PUT/PATCH non-admin endpoints",
+    lambda m, p: m in ("PUT", "PATCH") and not _is_admin(p),
+)
+_HELP_DELETE = _build_help(
+    "gitea_delete(path, params) -- DELETE non-admin endpoints",
+    lambda m, p: m == "DELETE" and not _is_admin(p),
+)
+_HELP_ADMIN_READ = _build_help(
+    "gitea_admin_read(path, params) -- GET /admin/* endpoints",
+    lambda m, p: m == "GET" and _is_admin(p),
+)
+_HELP_ADMIN_WRITE = _build_help(
+    "gitea_admin_write(method, path, params) -- POST/PUT/PATCH/DELETE /admin/*",
+    lambda m, p: m != "GET" and _is_admin(p),
+)
+
+
+# ── Shared dispatch ──────────────────────────────────────────────────
+def _dispatch(method: str, path: str, params_str: str) -> str:
     m = method.upper()
     c = _get_client()
-    p = json.loads(params) if params and params.strip() else {}
+    p = json.loads(params_str) if params_str and params_str.strip() else {}
 
     if m == "GET":
         if _is_text_path(path):
@@ -461,13 +492,10 @@ def gitea_api(method: str, path: str, params: str = "{}") -> str:
         return _ok(c.get(path, params=p or None))
 
     if m == "POST":
-        # Markdown returns HTML text
         if path == "/markdown":
             return c._text("POST", path, json=p)
-        # File content: auto-base64 encode "content" key
         if "/contents/" in path and "content" in p:
             p["content"] = base64.b64encode(p["content"].encode()).decode()
-        # Wiki content: move "content" -> "content_base64" as base64
         if "/wiki/" in path and "content" in p:
             p["content_base64"] = base64.b64encode(
                 p.pop("content").encode()
@@ -475,13 +503,11 @@ def gitea_api(method: str, path: str, params: str = "{}") -> str:
         return _ok(c.post(path, json=p))
 
     if m == "PUT":
-        # File content: auto-base64 encode "content" key
         if "/contents/" in path and "content" in p:
             p["content"] = base64.b64encode(p["content"].encode()).decode()
         return _ok(c.put(path, json=p))
 
     if m == "PATCH":
-        # Wiki content: move "content" -> "content_base64" as base64
         if "/wiki/" in path and "content" in p:
             p["content_base64"] = base64.b64encode(
                 p.pop("content").encode()
@@ -494,3 +520,76 @@ def gitea_api(method: str, path: str, params: str = "{}") -> str:
         return _ok(c.delete(path))
 
     return json.dumps({"error": f"Unsupported method: {method}"})
+
+
+# ── Six meta-tools ───────────────────────────────────────────────────
+@mcp.tool()
+def gitea_read(path: str, params: str = "{}") -> str:
+    """Read from Gitea API (GET). path='help' lists endpoints."""
+    if path.lower() == "help":
+        return _HELP_READ
+    if _is_admin(path):
+        return json.dumps({"error": "Admin paths require gitea_admin_read"})
+    return _dispatch("GET", path, params)
+
+
+@mcp.tool()
+def gitea_create(path: str, params: str = "{}") -> str:
+    """Create via Gitea API (POST). path='help' lists endpoints."""
+    if path.lower() == "help":
+        return _HELP_CREATE
+    if _is_admin(path):
+        return json.dumps({"error": "Admin paths require gitea_admin_write"})
+    return _dispatch("POST", path, params)
+
+
+@mcp.tool()
+def gitea_update(method: str, path: str, params: str = "{}") -> str:
+    """Update via Gitea API (PUT/PATCH). path='help' lists endpoints."""
+    if path.lower() == "help":
+        return _HELP_UPDATE
+    m = method.upper()
+    if m not in ("PUT", "PATCH"):
+        return json.dumps(
+            {"error": f"gitea_update only supports PUT/PATCH, got {method}"}
+        )
+    if _is_admin(path):
+        return json.dumps({"error": "Admin paths require gitea_admin_write"})
+    return _dispatch(m, path, params)
+
+
+@mcp.tool()
+def gitea_delete(path: str, params: str = "{}") -> str:
+    """Delete via Gitea API (DELETE). path='help' lists endpoints."""
+    if path.lower() == "help":
+        return _HELP_DELETE
+    if _is_admin(path):
+        return json.dumps({"error": "Admin paths require gitea_admin_write"})
+    return _dispatch("DELETE", path, params)
+
+
+@mcp.tool()
+def gitea_admin_read(path: str, params: str = "{}") -> str:
+    """Read admin endpoints (GET /admin/*). path='help' lists endpoints."""
+    if path.lower() == "help":
+        return _HELP_ADMIN_READ
+    if not _is_admin(path):
+        return json.dumps({"error": "Non-admin paths should use gitea_read"})
+    return _dispatch("GET", path, params)
+
+
+@mcp.tool()
+def gitea_admin_write(method: str, path: str, params: str = "{}") -> str:
+    """Write to admin endpoints (POST/PUT/PATCH/DELETE /admin/*). path='help' lists endpoints."""
+    if path.lower() == "help":
+        return _HELP_ADMIN_WRITE
+    m = method.upper()
+    if m not in ("POST", "PUT", "PATCH", "DELETE"):
+        return json.dumps(
+            {"error": f"gitea_admin_write requires POST/PUT/PATCH/DELETE, got {method}"}
+        )
+    if not _is_admin(path):
+        return json.dumps(
+            {"error": "Non-admin paths should use gitea_create/update/delete"}
+        )
+    return _dispatch(m, path, params)
