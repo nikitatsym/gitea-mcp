@@ -12,7 +12,7 @@ MCP server for Gitea -- full API coverage for autonomous AI agents.
 - Organizations, teams, and user management
 - Webhooks, deploy keys, notifications, wiki, packages
 - Admin endpoints for instance-level operations
-- **Compact mode** -- collapse all tools into a single `gitea_api` meta-tool via `GITEA_COMPACT=true`
+- **Compact mode** -- collapse all tools into 6 meta-tools via `GITEA_COMPACT=true`
 - Zero-config install via `uvx`
 
 ## Quick Start
@@ -48,7 +48,7 @@ Or use the interactive **[Setup Page](https://nikitatsym.github.io/gitea-mcp/)**
 
 By default, gitea-mcp exposes 293 individual tools. Some MCP clients handle large tool counts poorly (slow startup, context bloat, or hard limits).
 
-**Compact mode** collapses all 293 tools into a single `gitea_api(method, path, params)` meta-tool. Set `GITEA_COMPACT=true` to enable it:
+**Compact mode** collapses all 293 tools into 6 meta-tools for granular permission control. Set `GITEA_COMPACT=true` to enable it:
 
 ```json
 {
@@ -66,17 +66,29 @@ By default, gitea-mcp exposes 293 individual tools. Some MCP clients handle larg
 }
 ```
 
+| Tool | HTTP | Admin? | Signature |
+|---|---|---|---|
+| `gitea_read` | GET | no | `(path, params)` |
+| `gitea_create` | POST | no | `(path, params)` |
+| `gitea_update` | PUT/PATCH | no | `(method, path, params)` |
+| `gitea_delete` | DELETE | no | `(path, params)` |
+| `gitea_admin_read` | GET | yes | `(path, params)` |
+| `gitea_admin_write` | POST/PUT/PATCH/DELETE | yes | `(method, path, params)` |
+
 Usage examples:
 
 ```
-gitea_api("help", "")                        → list all endpoints
-gitea_api("GET", "/version")                 → get server version
-gitea_api("GET", "/repos/owner/repo")        → get a repository
-gitea_api("POST", "/user/repos", '{"name":"my-repo","auto_init":true}')
-gitea_api("DELETE", "/repos/owner/repo")     → delete a repository
+gitea_read("help")                           → list GET endpoints
+gitea_read("/version")                       → get server version
+gitea_read("/repos/owner/repo")              → get a repository
+gitea_create("/user/repos", '{"name":"my-repo","auto_init":true}')
+gitea_update("PATCH", "/repos/owner/repo", '{"description":"updated"}')
+gitea_delete("/repos/owner/repo")            → delete a repository
+gitea_admin_read("/admin/users")             → list all users (admin)
+gitea_admin_write("POST", "/admin/users", '{"username":"new","email":"a@b.c","password":"..."}')
 ```
 
-File and wiki content is auto-base64 encoded -- pass plain text in the `"content"` field.
+All tools accept `path="help"` to list their relevant endpoints. File and wiki content is auto-base64 encoded -- pass plain text in the `"content"` field.
 
 ## Creating a Gitea API Token
 
