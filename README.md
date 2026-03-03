@@ -12,6 +12,7 @@ MCP server for Gitea -- full API coverage for autonomous AI agents.
 - Organizations, teams, and user management
 - Webhooks, deploy keys, notifications, wiki, packages
 - Admin endpoints for instance-level operations
+- **Compact mode** -- collapse all tools into a single `gitea_api` meta-tool via `GITEA_COMPACT=true`
 - Zero-config install via `uvx`
 
 ## Quick Start
