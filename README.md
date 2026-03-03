@@ -4,7 +4,7 @@ MCP server for Gitea -- full API coverage for autonomous AI agents.
 
 ## Features
 
-- **293 tools** covering the entire Gitea API surface
+- **300 tools** covering the entire Gitea API surface
 - Repositories, issues, pull requests, releases, labels, milestones
 - File content management (create, read, update, delete)
 - Branches, tags, commits, and status checks
@@ -46,9 +46,9 @@ Or use the interactive **[Setup Page](https://nikitatsym.github.io/gitea-mcp/)**
 
 ## Compact Mode
 
-By default, gitea-mcp exposes 293 individual tools. Some MCP clients handle large tool counts poorly (slow startup, context bloat, or hard limits).
+By default, gitea-mcp exposes 300 individual tools. Some MCP clients handle large tool counts poorly (slow startup, context bloat, or hard limits).
 
-**Compact mode** collapses all 293 tools into 6 meta-tools for granular permission control. Set `GITEA_COMPACT=true` to enable it:
+**Compact mode** collapses all 300 tools into 6 meta-tools for granular permission control. Set `GITEA_COMPACT=true` to enable it:
 
 ```json
 {
