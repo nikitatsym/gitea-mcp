@@ -222,7 +222,8 @@
       "args": ["--refresh", "--extra-index-url", "https://nikitatsym.github.io/gitea-mcp/simple", "gitea-mcp"],
       "env": {
         "GITEA_URL": "<span class="placeholder">YOUR_GITEA_URL</span>",
-        "GITEA_TOKEN": "<span class="placeholder">YOUR_API_TOKEN</span>"
+        "GITEA_TOKEN": "<span class="placeholder">YOUR_API_TOKEN</span>",
+        "GITEA_COMPACT": "<span class="placeholder">true</span>"  <span style="color:var(--muted)">// optional: collapses 293 tools into 1</span>
       }
     }
   }
@@ -240,6 +241,11 @@
     <label for="gitea-token">API Token</label>
     <input type="password" id="gitea-token" placeholder="paste your token here" spellcheck="false">
     <p class="hint">Personal access token from Gitea &rarr; Settings &rarr; Applications.</p>
+
+    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:1rem;color:var(--text);font-size:0.9rem;font-weight:400">
+      <input type="checkbox" id="compact-mode" style="width:auto;margin:0">
+      Compact mode <span style="color:var(--muted);font-size:0.82rem">&mdash; collapses 293 tools into 1 meta-tool (<code>gitea_api</code>)</span>
+    </label>
 
     <div class="btn-row">
       <button class="btn-primary" id="btn-generate" onclick="generate()">Generate Config</button>
@@ -274,7 +280,7 @@
   </div>
 
   <footer>
-    <a href="https://github.com/nikitatsym/gitea-mcp">gitea-mcp</a> &mdash; 186 tools, full Gitea API coverage for autonomous agents.
+    <a href="https://github.com/nikitatsym/gitea-mcp">gitea-mcp</a> &mdash; 293 tools, full Gitea API coverage for autonomous agents.
   </footer>
 
 </div>
@@ -287,15 +293,19 @@ function generate() {
   if (!url) { alert('Please enter your Gitea URL.'); return; }
   if (!token) { alert('Please enter your API token.'); return; }
 
+  const compact = document.getElementById('compact-mode').checked;
+  const env = {
+    GITEA_URL: url,
+    GITEA_TOKEN: token
+  };
+  if (compact) env.GITEA_COMPACT = "true";
+
   const config = {
     mcpServers: {
       gitea: {
         command: "uvx",
         args: ["--refresh", "--extra-index-url", "https://nikitatsym.github.io/gitea-mcp/simple", "gitea-mcp"],
-        env: {
-          GITEA_URL: url,
-          GITEA_TOKEN: token
-        }
+        env: env
       }
     }
   };
