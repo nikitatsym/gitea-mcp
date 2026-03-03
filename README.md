@@ -4,7 +4,7 @@ MCP server for Gitea -- full API coverage for autonomous AI agents.
 
 ## Features
 
-- **186 tools** covering the entire Gitea API surface
+- **293 tools** covering the entire Gitea API surface
 - Repositories, issues, pull requests, releases, labels, milestones
 - File content management (create, read, update, delete)
 - Branches, tags, commits, and status checks
@@ -41,6 +41,41 @@ Or use the interactive **[Setup Page](https://nikitatsym.github.io/gitea-mcp/)**
 |---|---|---|
 | `GITEA_URL` | Yes | Base URL of your Gitea instance (e.g. `https://gitea.example.com`) |
 | `GITEA_TOKEN` | Yes | Personal access token with appropriate permissions |
+| `GITEA_COMPACT` | No | Set to `true` to enable compact mode (see below) |
+
+## Compact Mode
+
+By default, gitea-mcp exposes 293 individual tools. Some MCP clients handle large tool counts poorly (slow startup, context bloat, or hard limits).
+
+**Compact mode** collapses all 293 tools into a single `gitea_api(method, path, params)` meta-tool. Set `GITEA_COMPACT=true` to enable it:
+
+```json
+{
+  "mcpServers": {
+    "gitea": {
+      "command": "uvx",
+      "args": ["--refresh", "--extra-index-url", "https://nikitatsym.github.io/gitea-mcp/simple", "gitea-mcp"],
+      "env": {
+        "GITEA_URL": "https://gitea.example.com",
+        "GITEA_TOKEN": "your-api-token",
+        "GITEA_COMPACT": "true"
+      }
+    }
+  }
+}
+```
+
+Usage examples:
+
+```
+gitea_api("help", "")                        → list all endpoints
+gitea_api("GET", "/version")                 → get server version
+gitea_api("GET", "/repos/owner/repo")        → get a repository
+gitea_api("POST", "/user/repos", '{"name":"my-repo","auto_init":true}')
+gitea_api("DELETE", "/repos/owner/repo")     → delete a repository
+```
+
+File and wiki content is auto-base64 encoded -- pass plain text in the `"content"` field.
 
 ## Creating a Gitea API Token
 
