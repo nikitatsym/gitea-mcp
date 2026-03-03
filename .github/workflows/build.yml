@@ -56,7 +56,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
           PKG="gitea-mcp"
+          # gh release create returns before the API reflects the new asset — poll until it appears
+          for i in 1 2 3 4 5; do
+            gh api repos/${{ github.repository }}/releases --paginate \
+              -q '.[].assets[].browser_download_url' | grep -q "${VERSION}" && break
+            sleep 3
+          done
           mkdir -p _site/simple/${PKG}
           echo "<!DOCTYPE html><html><body>" > _site/simple/${PKG}/index.html
           gh api repos/${{ github.repository }}/releases --paginate -q '.[].assets[].browser_download_url' | while read URL; do
