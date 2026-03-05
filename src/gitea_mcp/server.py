@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -24,6 +25,37 @@ def _ok(data) -> str:
     if isinstance(data, dict) and "ok" in data and "data" in data:
         data = data["data"]
     return json.dumps(data, indent=2, ensure_ascii=False)
+
+
+_BRIEF_RE = re.compile(r"<brief>(.*?)</brief>", re.DOTALL)
+
+
+def _extract_brief(body: str | None) -> str | None:
+    """Extract <brief>...</brief> summary from body text."""
+    if not body:
+        return None
+    m = _BRIEF_RE.search(body)
+    return m.group(1).strip() if m else None
+
+
+def _slim_issue(issue: dict) -> dict:
+    """Strip an issue/PR to essential fields for list views."""
+    return {
+        "number": issue.get("number"),
+        "title": issue.get("title"),
+        "state": issue.get("state"),
+        "brief": _extract_brief(issue.get("body")),
+        "labels": [l["name"] for l in issue.get("labels") or []],
+        "assignee": issue["assignee"]["login"] if issue.get("assignee") else None,
+        "updated_at": issue.get("updated_at"),
+    }
+
+
+def _slim_issues(data) -> list:
+    """Apply _slim_issue to a list of issues/PRs."""
+    if isinstance(data, list):
+        return [_slim_issue(i) for i in data]
+    return data
 
 
 # ── General ──────────────────────────────────────────────────────────────────
@@ -1362,10 +1394,17 @@ def list_issues(
     assignee: Optional[str] = None,
     type: Optional[str] = None,
     page: Optional[int] = None,
-    limit: Optional[int] = None,
+    limit: Optional[int] = 20,
+    brief: bool = True,
 ) -> str:
-    """List issues in a repository. Type can be 'issues' or 'pulls'."""
-    params: dict = {}
+    """List issues in a repository. Type can be 'issues' or 'pulls'.
+
+    brief (default True): compact view — number, title, state, labels, assignee,
+    updated_at, and body summary extracted from a <brief>...</brief> tag.
+    If brief is null for an issue, use get_issue for full details or edit_issue
+    to add <brief>short summary</brief> to its body for convenient list views.
+    Set brief=False for full Gitea API response objects."""
+    params: dict = {"limit": limit}
     if state is not None:
         params["state"] = state
     if labels is not None:
@@ -1378,11 +1417,10 @@ def list_issues(
         params["type"] = type
     if page is not None:
         params["page"] = page
-    if limit is not None:
-        params["limit"] = limit
-    return _ok(
-        _get_client().get(f"/repos/{owner}/{repo}/issues", params=params or None)
-    )
+    data = _get_client().get(f"/repos/{owner}/{repo}/issues", params=params)
+    if brief:
+        data = _slim_issues(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -1392,9 +1430,18 @@ def search_issues(
     state: Optional[str] = None,
     labels: Optional[str] = None,
     type: Optional[str] = None,
+    limit: Optional[int] = 20,
+    page: Optional[int] = None,
+    brief: bool = True,
 ) -> str:
-    """Search issues across repositories."""
-    params: dict = {"q": query}
+    """Search issues across repositories.
+
+    brief (default True): compact view — number, title, state, labels, assignee,
+    updated_at, and body summary extracted from a <brief>...</brief> tag.
+    If brief is null for an issue, use get_issue for full details or edit_issue
+    to add <brief>short summary</brief> to its body for convenient list views.
+    Set brief=False for full Gitea API response objects."""
+    params: dict = {"q": query, "limit": limit}
     if owner is not None:
         params["owner"] = owner
     if state is not None:
@@ -1403,7 +1450,15 @@ def search_issues(
         params["labels"] = labels
     if type is not None:
         params["type"] = type
-    return _ok(_get_client().get("/repos/issues/search", params=params))
+    if page is not None:
+        params["page"] = page
+    data = _get_client().get("/repos/issues/search", params=params)
+    # Unwrap search format before slimming
+    if isinstance(data, dict) and "ok" in data and "data" in data:
+        data = data["data"]
+    if brief:
+        data = _slim_issues(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -1835,8 +1890,15 @@ def list_pull_requests(
     sort: Optional[str] = None,
     milestone: Optional[int] = None,
     labels: Optional[list[int]] = None,
+    brief: bool = True,
 ) -> str:
-    """List pull requests in a repository."""
+    """List pull requests in a repository.
+
+    brief (default True): compact view — number, title, state, labels, assignee,
+    updated_at, and body summary extracted from a <brief>...</brief> tag.
+    If brief is null for a PR, use get_pull_request for full details or
+    edit the PR body to add <brief>short summary</brief> for convenient list views.
+    Set brief=False for full Gitea API response objects."""
     params: dict = {}
     if state is not None:
         params["state"] = state
@@ -1846,9 +1908,10 @@ def list_pull_requests(
         params["milestone"] = milestone
     if labels is not None:
         params["labels"] = ",".join(str(l) for l in labels)
-    return _ok(
-        _get_client().paginate(f"/repos/{owner}/{repo}/pulls", params=params or None)
-    )
+    data = _get_client().paginate(f"/repos/{owner}/{repo}/pulls", params=params or None)
+    if brief:
+        data = _slim_issues(data)
+    return _ok(data)
 
 
 @mcp.tool()
