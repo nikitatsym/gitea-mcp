@@ -2,6 +2,7 @@
 
 import base64
 import json
+import re
 
 from mcp.server.fastmcp import FastMCP
 
@@ -379,6 +380,7 @@ _ENDPOINTS = {
 
 # ── Import server.py for introspection & validation ───────────────────
 from . import server as _srv
+from .server import _slim_issues
 
 _TOOL_DESCS: dict[str, str] = {}
 for _name, _tool in _srv.mcp._tool_manager._tools.items():
@@ -409,6 +411,16 @@ _TEXT_PATTERNS = ("/raw/", ".diff", "/logs", "/signing-key.gpg", "/archive/")
 
 def _is_text_path(path: str) -> bool:
     return any(p in path for p in _TEXT_PATTERNS)
+
+
+_BRIEF_PATH_RE = re.compile(
+    r"^/repos(/[^/]+/[^/]+)?/(issues|pulls)$|^/repos/issues/search$"
+)
+
+
+def _is_brief_path(path: str) -> bool:
+    """Match list/search endpoints that support brief mode."""
+    return bool(_BRIEF_PATH_RE.match(path))
 
 
 def _ok(data) -> str:
@@ -443,6 +455,13 @@ def _build_help(header: str, filter_fn) -> str:
         "  - params is a JSON string: query params for GET, body for POST/PUT/PATCH",
         "  - File/wiki content: pass plain text, auto-base64 encoded",
         "  - Pagination: pass {\"page\":N,\"limit\":N} in params",
+        "  - Issues/PRs brief mode: list_issues, search_issues, list_pull_requests",
+        "    return compact objects by default (brief=true, limit=20).",
+        "    Each item: number, title, state, labels, assignee, updated_at,",
+        "    and brief (body summary from <brief>...</brief> tag).",
+        "    If brief is null, use get_issue/get_pull_request for full details",
+        "    or add <brief>short summary</brief> to the body for convenient lists.",
+        "    Pass {\"brief\":false} for full API response objects.",
         "",
     ]
     for category, ops in _ENDPOINTS.items():
@@ -496,7 +515,14 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
     if m == "GET":
         if _is_text_path(path):
             return c.get_text(path, params=p or None)
-        return _ok(c.get(path, params=p or None))
+        # Brief mode for issues/PRs list endpoints
+        brief = p.pop("brief", None)
+        data = c.get(path, params=p or None)
+        if brief is not False and _is_brief_path(path):
+            if isinstance(data, dict) and "ok" in data and "data" in data:
+                data = data["data"]
+            data = _slim_issues(data)
+        return _ok(data)
 
     if m == "POST":
         if path == "/markdown":
