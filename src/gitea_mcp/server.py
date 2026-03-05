@@ -2183,11 +2183,28 @@ def get_workflow_job(owner: str, repo: str, job_id: int) -> str:
 
 
 @mcp.tool()
-def get_workflow_job_logs(owner: str, repo: str, job_id: int) -> str:
-    """Get logs for a workflow job."""
-    return _get_client().get_text(
+def get_workflow_job_logs(
+    owner: str,
+    repo: str,
+    job_id: int,
+    tail: Optional[int] = 100,
+    filter: Optional[str] = None,
+) -> str:
+    """Get logs for a workflow job.
+
+    tail (default 100): return only the last N lines. Set to 0 for full log.
+    filter: regex pattern to grep log lines (e.g. 'error|fail|fatal').
+    When both are set, filter is applied first, then tail."""
+    text = _get_client().get_text(
         f"/repos/{owner}/{repo}/actions/jobs/{job_id}/logs"
     )
+    lines = text.splitlines()
+    if filter:
+        pat = re.compile(filter, re.IGNORECASE)
+        lines = [l for l in lines if pat.search(l)]
+    if tail and tail > 0:
+        lines = lines[-tail:]
+    return "\n".join(lines)
 
 
 @mcp.tool()

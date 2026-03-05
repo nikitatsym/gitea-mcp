@@ -462,6 +462,10 @@ def _build_help(header: str, filter_fn) -> str:
         "    If brief is null, use get_issue/get_pull_request for full details",
         "    or add <brief>short summary</brief> to the body for convenient lists.",
         "    Pass {\"brief\":false} for full API response objects.",
+        "  - Job logs: GET .../actions/jobs/{job_id}/logs returns last 100 lines",
+        "    by default. Pass {\"tail\":N} to change (0 = full log).",
+        "    Pass {\"filter\":\"error|fail\"} to grep lines by regex pattern.",
+        "    When both set, filter applies first, then tail.",
         "",
     ]
     for category, ops in _ENDPOINTS.items():
@@ -514,7 +518,18 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
 
     if m == "GET":
         if _is_text_path(path):
-            return c.get_text(path, params=p or None)
+            tail = p.pop("tail", 100 if "/logs" in path else 0)
+            log_filter = p.pop("filter", None)
+            text = c.get_text(path, params=p or None)
+            if log_filter or tail:
+                lines = text.splitlines()
+                if log_filter:
+                    pat = re.compile(log_filter, re.IGNORECASE)
+                    lines = [l for l in lines if pat.search(l)]
+                if tail and tail > 0:
+                    lines = lines[-tail:]
+                text = "\n".join(lines)
+            return text
         # Brief mode for issues/PRs list endpoints
         brief = p.pop("brief", None)
         data = c.get(path, params=p or None)
