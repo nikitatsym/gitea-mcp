@@ -380,7 +380,13 @@ _ENDPOINTS = {
 
 # ── Import server.py for introspection & validation ───────────────────
 from . import server as _srv
-from .server import _slim_issues
+from .server import (
+    _slim_issues,
+    _slim_repos,
+    _slim_notifications,
+    _slim_comments,
+    _slim_commits,
+)
 
 _TOOL_DESCS: dict[str, str] = {}
 for _name, _tool in _srv.mcp._tool_manager._tools.items():
@@ -413,14 +419,39 @@ def _is_text_path(path: str) -> bool:
     return any(p in path for p in _TEXT_PATTERNS)
 
 
-_BRIEF_PATH_RE = re.compile(
-    r"^/repos(/[^/]+/[^/]+)?/(issues|pulls)$|^/repos/issues/search$"
-)
+_BRIEF_RULES: list[tuple[re.Pattern, callable]] = [
+    # Issues & PRs
+    (re.compile(r"^/repos(/[^/]+/[^/]+)?/(issues|pulls)$|^/repos/issues/search$"), _slim_issues),
+    # Issue comments (per-issue and per-repo)
+    (re.compile(r"^/repos/[^/]+/[^/]+/issues(/\d+)?/comments$"), _slim_comments),
+    # Repos lists
+    (re.compile(
+        r"^/repos/search$"
+        r"|^/users/[^/]+/repos$"
+        r"|^/orgs/[^/]+/repos$"
+        r"|^/repos/[^/]+/[^/]+/forks$"
+        r"|^/user/(starred|subscriptions)$"
+    ), _slim_repos),
+    # Notifications
+    (re.compile(r"^/notifications$|^/repos/[^/]+/[^/]+/notifications$"), _slim_notifications),
+    # Commits
+    (re.compile(r"^/repos/[^/]+/[^/]+/commits$"), _slim_commits),
+    # Releases (inline slim)
+    (re.compile(r"^/repos/[^/]+/[^/]+/releases$"), lambda data: [
+        {"id": r.get("id"), "tag_name": r.get("tag_name"), "name": r.get("name"),
+         "draft": r.get("draft"), "prerelease": r.get("prerelease"),
+         "published_at": r.get("published_at")}
+        for r in data
+    ] if isinstance(data, list) else data),
+]
 
 
-def _is_brief_path(path: str) -> bool:
-    """Match list/search endpoints that support brief mode."""
-    return bool(_BRIEF_PATH_RE.match(path))
+def _get_brief_slimmer(path: str):
+    """Return slim function for path, or None."""
+    for pattern, slimmer in _BRIEF_RULES:
+        if pattern.match(path):
+            return slimmer
+    return None
 
 
 def _ok(data) -> str:
@@ -455,13 +486,11 @@ def _build_help(header: str, filter_fn) -> str:
         "  - params is a JSON string: query params for GET, body for POST/PUT/PATCH",
         "  - File/wiki content: pass plain text, auto-base64 encoded",
         "  - Pagination: pass {\"page\":N,\"limit\":N} in params",
-        "  - Issues/PRs brief mode: list_issues, search_issues, list_pull_requests",
-        "    return compact objects by default (brief=true, limit=20).",
-        "    Each item: number, title, state, labels, assignee, updated_at,",
-        "    and brief (body summary from <brief>...</brief> tag).",
-        "    If brief is null, use get_issue/get_pull_request for full details",
-        "    or add <brief>short summary</brief> to the body for convenient lists.",
+        "  - Brief mode: list endpoints return compact objects by default (brief=true).",
         "    Pass {\"brief\":false} for full API response objects.",
+        "    Supported: issues, pulls, repos, notifications, comments, commits, releases.",
+        "    Issues/PRs include brief field from <brief>...</brief> tag in body.",
+        "    If brief is null, use get_issue for details or add <brief>summary</brief> to body.",
         "  - Job logs: GET .../actions/jobs/{job_id}/logs returns last 100 lines",
         "    by default. Pass {\"tail\":N} to change (0 = full log).",
         "    Pass {\"filter\":\"error|fail\"} to grep lines by regex pattern.",
@@ -530,13 +559,15 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
                     lines = lines[-tail:]
                 text = "\n".join(lines)
             return text
-        # Brief mode for issues/PRs list endpoints
+        # Brief mode for list endpoints
         brief = p.pop("brief", None)
         data = c.get(path, params=p or None)
-        if brief is not False and _is_brief_path(path):
-            if isinstance(data, dict) and "ok" in data and "data" in data:
-                data = data["data"]
-            data = _slim_issues(data)
+        if brief is not False:
+            slimmer = _get_brief_slimmer(path)
+            if slimmer:
+                if isinstance(data, dict) and "ok" in data and "data" in data:
+                    data = data["data"]
+                data = slimmer(data)
         return _ok(data)
 
     if m == "POST":

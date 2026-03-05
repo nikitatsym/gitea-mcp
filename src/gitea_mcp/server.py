@@ -58,6 +58,80 @@ def _slim_issues(data) -> list:
     return data
 
 
+def _slim_repo(repo: dict) -> dict:
+    """Strip a repo to essential fields for list views."""
+    return {
+        "full_name": repo.get("full_name"),
+        "description": repo.get("description"),
+        "private": repo.get("private"),
+        "fork": repo.get("fork"),
+        "language": repo.get("language"),
+        "stars_count": repo.get("stars_count"),
+        "open_issues_count": repo.get("open_issues_count"),
+        "default_branch": repo.get("default_branch"),
+        "updated_at": repo.get("updated_at"),
+    }
+
+
+def _slim_repos(data) -> list:
+    if isinstance(data, list):
+        return [_slim_repo(r) for r in data]
+    return data
+
+
+def _slim_notification(n: dict) -> dict:
+    """Strip a notification to essential fields."""
+    return {
+        "id": n.get("id"),
+        "repo": n["repository"]["full_name"] if n.get("repository") else None,
+        "subject_type": n.get("subject", {}).get("type"),
+        "subject_title": n.get("subject", {}).get("title"),
+        "subject_url": n.get("subject", {}).get("url"),
+        "unread": n.get("unread"),
+        "updated_at": n.get("updated_at"),
+    }
+
+
+def _slim_notifications(data) -> list:
+    if isinstance(data, list):
+        return [_slim_notification(n) for n in data]
+    return data
+
+
+def _slim_comment(c: dict) -> dict:
+    """Strip a comment to essential fields."""
+    return {
+        "id": c.get("id"),
+        "user": c["user"]["login"] if c.get("user") else None,
+        "body": c.get("body"),
+        "created_at": c.get("created_at"),
+        "updated_at": c.get("updated_at"),
+    }
+
+
+def _slim_comments(data) -> list:
+    if isinstance(data, list):
+        return [_slim_comment(c) for c in data]
+    return data
+
+
+def _slim_commit(c: dict) -> dict:
+    """Strip a commit to essential fields."""
+    commit = c.get("commit", {})
+    return {
+        "sha": c.get("sha", "")[:12],
+        "message": commit.get("message", "").split("\n")[0],
+        "author": commit.get("author", {}).get("name"),
+        "date": commit.get("author", {}).get("date"),
+    }
+
+
+def _slim_commits(data) -> list:
+    if isinstance(data, list):
+        return [_slim_commit(c) for c in data]
+    return data
+
+
 # ── General ──────────────────────────────────────────────────────────────────
 
 
@@ -98,9 +172,16 @@ def get_user(username: str) -> str:
 
 
 @mcp.tool()
-def list_user_repos(username: str) -> str:
-    """List a user's public repositories."""
-    return _ok(_get_client().paginate(f"/users/{username}/repos"))
+def list_user_repos(username: str, brief: bool = True) -> str:
+    """List a user's public repositories.
+
+    brief (default True): compact view — full_name, description, language,
+    stars, issues count, default_branch, updated_at.
+    Set brief=False for full Gitea API response objects."""
+    data = _get_client().paginate(f"/users/{username}/repos")
+    if brief:
+        data = _slim_repos(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -327,22 +408,30 @@ def search_repos(
     topic: Optional[bool] = None,
     sort: Optional[str] = None,
     order: Optional[str] = None,
-    limit: Optional[int] = None,
+    limit: Optional[int] = 20,
     page: Optional[int] = None,
+    brief: bool = True,
 ) -> str:
-    """Search for repositories by keyword."""
-    params: dict = {"q": query}
+    """Search for repositories by keyword.
+
+    brief (default True): compact view — full_name, description, language,
+    stars, issues count, default_branch, updated_at.
+    Set brief=False for full Gitea API response objects."""
+    params: dict = {"q": query, "limit": limit}
     if topic is not None:
         params["topic"] = topic
     if sort is not None:
         params["sort"] = sort
     if order is not None:
         params["order"] = order
-    if limit is not None:
-        params["limit"] = limit
     if page is not None:
         params["page"] = page
-    return _ok(_get_client().get("/repos/search", params=params))
+    data = _get_client().get("/repos/search", params=params)
+    if isinstance(data, dict) and "ok" in data and "data" in data:
+        data = data["data"]
+    if brief:
+        data = _slim_repos(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -441,9 +530,14 @@ def fork_repo(
 
 
 @mcp.tool()
-def list_forks(owner: str, repo: str) -> str:
-    """List forks of a repository."""
-    return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/forks"))
+def list_forks(owner: str, repo: str, brief: bool = True) -> str:
+    """List forks of a repository.
+
+    brief (default True): compact view. Set brief=False for full objects."""
+    data = _get_client().paginate(f"/repos/{owner}/{repo}/forks")
+    if brief:
+        data = _slim_repos(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -500,9 +594,14 @@ def unstar_repo(owner: str, repo: str) -> str:
 
 
 @mcp.tool()
-def list_my_starred_repos() -> str:
-    """List repositories starred by the current user."""
-    return _ok(_get_client().paginate("/user/starred"))
+def list_my_starred_repos(brief: bool = True) -> str:
+    """List repositories starred by the current user.
+
+    brief (default True): compact view. Set brief=False for full objects."""
+    data = _get_client().paginate("/user/starred")
+    if brief:
+        data = _slim_repos(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -524,9 +623,14 @@ def list_repo_watchers(owner: str, repo: str) -> str:
 
 
 @mcp.tool()
-def list_my_subscriptions() -> str:
-    """List repositories watched by the current user."""
-    return _ok(_get_client().paginate("/user/subscriptions"))
+def list_my_subscriptions(brief: bool = True) -> str:
+    """List repositories watched by the current user.
+
+    brief (default True): compact view. Set brief=False for full objects."""
+    data = _get_client().paginate("/user/subscriptions")
+    if brief:
+        data = _slim_repos(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -1068,22 +1172,27 @@ def list_commits(
     sha: Optional[str] = None,
     path: Optional[str] = None,
     stat: Optional[bool] = None,
-    limit: Optional[int] = None,
+    limit: Optional[int] = 20,
     page: Optional[int] = None,
+    brief: bool = True,
 ) -> str:
-    """List commits in a repository."""
-    params: dict = {}
+    """List commits in a repository.
+
+    brief (default True): compact view — short sha, first line of message,
+    author name, date. Set brief=False for full objects."""
+    params: dict = {"limit": limit}
     if sha is not None:
         params["sha"] = sha
     if path is not None:
         params["path"] = path
     if stat is not None:
         params["stat"] = stat
-    if limit is not None:
-        params["limit"] = limit
     if page is not None:
         params["page"] = page
-    return _ok(_get_client().get(f"/repos/{owner}/{repo}/commits", params=params or None))
+    data = _get_client().get(f"/repos/{owner}/{repo}/commits", params=params)
+    if brief:
+        data = _slim_commits(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -1172,9 +1281,25 @@ def delete_tag(owner: str, repo: str, tag: str) -> str:
 
 
 @mcp.tool()
-def list_releases(owner: str, repo: str) -> str:
-    """List a repository's releases."""
-    return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/releases"))
+def list_releases(owner: str, repo: str, brief: bool = True) -> str:
+    """List a repository's releases.
+
+    brief (default True): compact view — id, tag, name, draft/prerelease,
+    published date. Set brief=False for full objects."""
+    data = _get_client().paginate(f"/repos/{owner}/{repo}/releases")
+    if brief:
+        data = [
+            {
+                "id": r.get("id"),
+                "tag_name": r.get("tag_name"),
+                "name": r.get("name"),
+                "draft": r.get("draft"),
+                "prerelease": r.get("prerelease"),
+                "published_at": r.get("published_at"),
+            }
+            for r in data
+        ] if isinstance(data, list) else data
+    return _ok(data)
 
 
 @mcp.tool()
@@ -1525,11 +1650,15 @@ def edit_issue(
 
 
 @mcp.tool()
-def list_issue_comments(owner: str, repo: str, index: int) -> str:
-    """List comments on an issue."""
-    return _ok(
-        _get_client().paginate(f"/repos/{owner}/{repo}/issues/{index}/comments")
-    )
+def list_issue_comments(owner: str, repo: str, index: int, brief: bool = True) -> str:
+    """List comments on an issue.
+
+    brief (default True): compact view — id, user login, body, timestamps.
+    Set brief=False for full objects."""
+    data = _get_client().paginate(f"/repos/{owner}/{repo}/issues/{index}/comments")
+    if brief:
+        data = _slim_comments(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -1639,18 +1768,23 @@ def list_repo_issue_comments(
     repo: str,
     since: Optional[str] = None,
     before: Optional[str] = None,
+    brief: bool = True,
 ) -> str:
-    """List all comments in a repository (across all issues)."""
+    """List all comments in a repository (across all issues).
+
+    brief (default True): compact view — id, user login, body, timestamps.
+    Set brief=False for full objects."""
     params: dict = {}
     if since is not None:
         params["since"] = since
     if before is not None:
         params["before"] = before
-    return _ok(
-        _get_client().paginate(
-            f"/repos/{owner}/{repo}/issues/comments", params=params or None
-        )
+    data = _get_client().paginate(
+        f"/repos/{owner}/{repo}/issues/comments", params=params or None
     )
+    if brief:
+        data = _slim_comments(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -2352,9 +2486,14 @@ def delete_org(org: str) -> str:
 
 
 @mcp.tool()
-def list_org_repos(org: str) -> str:
-    """List repositories in an organization."""
-    return _ok(_get_client().paginate(f"/orgs/{org}/repos"))
+def list_org_repos(org: str, brief: bool = True) -> str:
+    """List repositories in an organization.
+
+    brief (default True): compact view. Set brief=False for full objects."""
+    data = _get_client().paginate(f"/orgs/{org}/repos")
+    if brief:
+        data = _slim_repos(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -2595,8 +2734,12 @@ def list_notifications(
     all: Optional[bool] = None,
     status_types: Optional[list[str]] = None,
     subject_type: Optional[str] = None,
+    brief: bool = True,
 ) -> str:
-    """List notifications for the current user."""
+    """List notifications for the current user.
+
+    brief (default True): compact view — id, repo, subject type/title, unread,
+    updated_at. Set brief=False for full objects."""
     params: dict = {}
     if all is not None:
         params["all"] = all
@@ -2604,9 +2747,10 @@ def list_notifications(
         params["status-types"] = status_types
     if subject_type is not None:
         params["subject-type"] = subject_type
-    return _ok(
-        _get_client().paginate("/notifications", params=params or None)
-    )
+    data = _get_client().paginate("/notifications", params=params or None)
+    if brief:
+        data = _slim_notifications(data)
+    return _ok(data)
 
 
 @mcp.tool()
@@ -2636,18 +2780,22 @@ def list_repo_notifications(
     repo: str,
     all: Optional[bool] = None,
     status_types: Optional[list[str]] = None,
+    brief: bool = True,
 ) -> str:
-    """List notifications for a repository."""
+    """List notifications for a repository.
+
+    brief (default True): compact view. Set brief=False for full objects."""
     params: dict = {}
     if all is not None:
         params["all"] = all
     if status_types is not None:
         params["status-types"] = status_types
-    return _ok(
-        _get_client().paginate(
-            f"/repos/{owner}/{repo}/notifications", params=params or None
-        )
+    data = _get_client().paginate(
+        f"/repos/{owner}/{repo}/notifications", params=params or None
     )
+    if brief:
+        data = _slim_notifications(data)
+    return _ok(data)
 
 
 @mcp.tool()
