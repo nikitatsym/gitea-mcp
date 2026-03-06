@@ -302,7 +302,7 @@ jobs:
             owner=self.owner,
             repo=self.repo_name,
             title="Fix the bug in hello.py",
-            body="The greeting message needs to be updated.\n\n- [ ] Update message\n- [ ] Add tests",
+            body="<brief>Fix greeting message in hello.py</brief>\nThe greeting message needs to be updated.\n\n- [ ] Update message\n- [ ] Add tests",
             labels=[TestAgentWorkflow.label_id],
             milestone_id=TestAgentWorkflow.milestone_id,
         )
@@ -425,7 +425,7 @@ jobs:
             owner=self.owner,
             repo=self.repo_name,
             title="Prerequisite task",
-            body="This must be done first",
+            body="<brief>Prerequisite task for dependency test</brief>\nThis must be done first",
         )
         TestAgentWorkflow.second_issue_index = result["number"]
 
