@@ -17,7 +17,8 @@ MCP server for Gitea -- full API coverage for autonomous AI agents.
 
 ## Quick Start
 
-Add the following to your MCP client configuration (Claude Desktop, Cursor, Claude Code, etc.):
+Add the following to your MCP client configuration (Claude Desktop, Cursor, Claude Code, etc.).
+For Claude Code global config on macOS: `~/.claude.json` → `"mcpServers"`.
 
 ```json
 {
