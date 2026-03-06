@@ -386,6 +386,9 @@ from .server import (
     _slim_notifications,
     _slim_comments,
     _slim_commits,
+    _validate_brief,
+    _REQUIRE_BRIEF,
+    _BRIEF_MAX_LENGTH,
 )
 
 _TOOL_DESCS: dict[str, str] = {}
@@ -477,40 +480,57 @@ def _is_admin(path: str) -> bool:
 
 
 # ── Auto-generate help text ──────────────────────────────────────────
+from jinja2 import Environment as _JinjaEnv
+
+_HELP_TEMPLATE = _JinjaEnv(
+    keep_trailing_newline=True, lstrip_blocks=True, trim_blocks=True
+).from_string("""\
+{{ header }}
+
+NOTES:
+  - params is a JSON string: query params for GET, body for POST/PUT/PATCH
+  - File/wiki content: pass plain text, auto-base64 encoded
+  - Pagination: pass {"page":N,"limit":N} in params
+  - Brief mode: list endpoints return compact objects by default (brief=true).
+    Pass {"brief":false} for full API response objects.
+    Supported: issues, pulls, repos, notifications, comments, commits, releases.
+    Issues/PRs include brief field from <brief>...</brief> tag in body.
+    If brief is null, use get_issue for details or add <brief>summary</brief> to body.
+{% if require_brief %}
+  - Issues: body MUST contain <brief>summary</brief> tag (max {{ brief_max_length }} chars).
+{% endif %}
+  - Job logs: GET .../actions/jobs/{job_id}/logs returns last 100 lines
+    by default. Pass {"tail":N} to change (0 = full log).
+    Pass {"filter":"error|fail"} to grep lines by regex pattern.
+    When both set, filter applies first, then tail.
+
+{% for category, endpoints in sections %}
+{{ category }}
+{% for method, path, desc in endpoints %}
+  {{ "%-6s"|format(method) }} {{ path }} -- {{ desc }}
+{% endfor %}
+
+{% endfor %}
+""")
+
+
 def _build_help(header: str, filter_fn) -> str:
     """Build help for endpoints where filter_fn(method, path) is True."""
-    lines = [
-        header,
-        "",
-        "NOTES:",
-        "  - params is a JSON string: query params for GET, body for POST/PUT/PATCH",
-        "  - File/wiki content: pass plain text, auto-base64 encoded",
-        "  - Pagination: pass {\"page\":N,\"limit\":N} in params",
-        "  - Brief mode: list endpoints return compact objects by default (brief=true).",
-        "    Pass {\"brief\":false} for full API response objects.",
-        "    Supported: issues, pulls, repos, notifications, comments, commits, releases.",
-        "    Issues/PRs include brief field from <brief>...</brief> tag in body.",
-        "    If brief is null, use get_issue for details or add <brief>summary</brief> to body.",
-        "  - Job logs: GET .../actions/jobs/{job_id}/logs returns last 100 lines",
-        "    by default. Pass {\"tail\":N} to change (0 = full log).",
-        "    Pass {\"filter\":\"error|fail\"} to grep lines by regex pattern.",
-        "    When both set, filter applies first, then tail.",
-        "",
-    ]
+    sections = []
     for category, ops in _ENDPOINTS.items():
         matching = [
-            (name, m, p)
+            (m, p, _TOOL_DESCS.get(name, ""))
             for name, (m, p) in ops.items()
             if filter_fn(m, p)
         ]
-        if not matching:
-            continue
-        lines.append(f"{category.upper()}")
-        for name, method, path in matching:
-            desc = _TOOL_DESCS.get(name, "")
-            lines.append(f"  {method:6s} {path} -- {desc}")
-        lines.append("")
-    return "\n".join(lines)
+        if matching:
+            sections.append((category.upper(), matching))
+    return _HELP_TEMPLATE.render(
+        header=header,
+        sections=sections,
+        require_brief=_REQUIRE_BRIEF,
+        brief_max_length=_BRIEF_MAX_LENGTH,
+    ).rstrip()
 
 
 _HELP_READ = _build_help(
@@ -573,6 +593,8 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
     if m == "POST":
         if path == "/markdown":
             return c._text("POST", path, json=p)
+        if re.match(r"/repos/[^/]+/[^/]+/issues$", path):
+            _validate_brief(p.get("body"))
         if "/contents/" in path and "content" in p:
             p["content"] = base64.b64encode(p["content"].encode()).decode()
         if "/wiki/" in path and "content" in p:
@@ -587,6 +609,8 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
         return _ok(c.put(path, json=p))
 
     if m == "PATCH":
+        if re.match(r"/repos/[^/]+/[^/]+/issues/\d+$", path) and "body" in p:
+            _validate_brief(p.get("body"))
         if "/wiki/" in path and "content" in p:
             p["content_base64"] = base64.b64encode(
                 p.pop("content").encode()
