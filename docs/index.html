@@ -223,7 +223,8 @@
       "env": {
         "GITEA_URL": "<span class="placeholder">YOUR_GITEA_URL</span>",
         "GITEA_TOKEN": "<span class="placeholder">YOUR_API_TOKEN</span>",
-        "GITEA_COMPACT": "<span class="placeholder">true</span>"  <span style="color:var(--muted)">// optional: collapses 300 tools into 6</span>
+        "GITEA_COMPACT": "<span class="placeholder">true</span>",  <span style="color:var(--muted)">// optional: collapses 300 tools into 6</span>
+        "GITEA_REQUIRE_BRIEF": "<span class="placeholder">true</span>"  <span style="color:var(--muted)">// optional: require &lt;brief&gt; tag in issues</span>
       }
     }
   }
@@ -246,6 +247,15 @@
       <input type="checkbox" id="compact-mode" style="width:auto;margin:0">
       Compact mode <span style="color:var(--muted);font-size:0.82rem">&mdash; collapses 300 tools into 6 meta-tools</span>
     </label>
+
+    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.35rem;color:var(--text);font-size:0.9rem;font-weight:400">
+      <input type="checkbox" id="require-brief" checked style="width:auto;margin:0" onchange="document.getElementById('brief-max-row').style.display=this.checked?'flex':'none'">
+      Require &lt;brief&gt; tag <span style="color:var(--muted);font-size:0.82rem">&mdash; agents must add &lt;brief&gt;summary&lt;/brief&gt; in issue body</span>
+    </label>
+    <div id="brief-max-row" style="display:flex;align-items:center;gap:0.5rem;margin-left:1.5rem;margin-bottom:1rem">
+      <label for="brief-max" style="display:inline;margin:0;font-size:0.82rem;white-space:nowrap">Max length:</label>
+      <input type="text" id="brief-max" value="200" style="width:5rem;padding:0.35rem 0.5rem;font-size:0.82rem;margin:0">
+    </div>
 
     <div class="btn-row">
       <button class="btn-primary" id="btn-generate" onclick="generate()">Generate Config</button>
@@ -274,7 +284,7 @@
     <ol>
       <li><strong>Claude Desktop</strong> &mdash; paste into <code>claude_desktop_config.json</code>.</li>
       <li><strong>Cursor</strong> &mdash; paste into <code>.cursor/mcp.json</code> in your project root.</li>
-      <li><strong>Claude Code</strong> &mdash; paste into <code>.claude/settings.json</code> or use <code>claude mcp add</code>.</li>
+      <li><strong>Claude Code</strong> &mdash; paste into <code>.claude/settings.json</code> or use <code>claude mcp add</code>. Global config (macOS): <code>~/.claude.json</code> &rarr; <code>"mcpServers"</code>.</li>
       <li>For other MCP clients, consult their documentation on where to place the server configuration.</li>
     </ol>
   </div>
@@ -294,11 +304,18 @@ function generate() {
   if (!token) { alert('Please enter your API token.'); return; }
 
   const compact = document.getElementById('compact-mode').checked;
+  const requireBrief = document.getElementById('require-brief').checked;
+  const briefMax = document.getElementById('brief-max').value.trim();
+
   const env = {
     GITEA_URL: url,
     GITEA_TOKEN: token
   };
   if (compact) env.GITEA_COMPACT = "true";
+  if (requireBrief) {
+    env.GITEA_REQUIRE_BRIEF = "true";
+    if (briefMax && briefMax !== "200") env.GITEA_BRIEF_MAX_LENGTH = briefMax;
+  }
 
   const config = {
     mcpServers: {
