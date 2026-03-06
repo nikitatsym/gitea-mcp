@@ -28,6 +28,12 @@ def _ok(data) -> str:
 
 
 _BRIEF_RE = re.compile(r"<brief>(.*?)</brief>", re.DOTALL)
+_REQUIRE_BRIEF = os.environ.get("GITEA_REQUIRE_BRIEF", "true").lower() not in (
+    "0",
+    "false",
+    "no",
+)
+_BRIEF_MAX_LENGTH = int(os.environ.get("GITEA_BRIEF_MAX_LENGTH", "200"))
 
 
 def _extract_brief(body: str | None) -> str | None:
@@ -36,6 +42,23 @@ def _extract_brief(body: str | None) -> str | None:
         return None
     m = _BRIEF_RE.search(body)
     return m.group(1).strip() if m else None
+
+
+def _validate_brief(body: str | None) -> None:
+    """Raise ValueError if brief requirement is on and body lacks a valid <brief> tag."""
+    if not _REQUIRE_BRIEF:
+        return
+    if not body or not _BRIEF_RE.search(body):
+        raise ValueError(
+            "body must contain a <brief>one-line summary</brief> tag. "
+            "Add it at the top of the body text."
+        )
+    brief = _extract_brief(body)
+    if brief and len(brief) > _BRIEF_MAX_LENGTH:
+        raise ValueError(
+            f"<brief> too long: {len(brief)} chars, max {_BRIEF_MAX_LENGTH}. "
+            "Keep it to a concise one-liner."
+        )
 
 
 def _slim_issue(issue: dict) -> dict:
@@ -1602,7 +1625,8 @@ def create_issue(
     milestone_id: Optional[int] = None,
     labels: Optional[list[int]] = None,
 ) -> str:
-    """Create an issue in a repository."""
+    """Create an issue in a repository. Body must include <brief>summary</brief> tag."""
+    _validate_brief(body)
     payload: dict = {"title": title}
     if body is not None:
         payload["body"] = body
@@ -1628,7 +1652,9 @@ def edit_issue(
     labels: Optional[list[int]] = None,
     due_date: Optional[str] = None,
 ) -> str:
-    """Edit an issue. State can be 'open' or 'closed'."""
+    """Edit an issue. State can be 'open' or 'closed'. Body must include <brief>summary</brief> tag."""
+    if body is not None:
+        _validate_brief(body)
     payload: dict = {}
     if title is not None:
         payload["title"] = title
