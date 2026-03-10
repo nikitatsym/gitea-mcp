@@ -3,6 +3,7 @@
 import base64
 import json
 import re
+from urllib.parse import urlparse, parse_qs
 
 from mcp.server.fastmcp import FastMCP
 
@@ -564,6 +565,13 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
     m = method.upper()
     c = _get_client()
     p = json.loads(params_str) if params_str and params_str.strip() else {}
+
+    # Split query string from path and merge into params
+    if "?" in path:
+        parsed = urlparse(path)
+        path = parsed.path
+        for k, v in parse_qs(parsed.query).items():
+            p.setdefault(k, v[0] if len(v) == 1 else v)
 
     if m == "GET":
         if _is_text_path(path):
