@@ -57,16 +57,22 @@ def _validate_brief(body: str | None) -> None:
 
 
 def _enforce_private(private: bool | None) -> bool | None:
-    """Block public repos when GITEA_FORBID_PUBLIC is on."""
-    if get_settings().gitea_forbid_public and private is False:
-        raise ValueError("Public repos not allowed (GITEA_FORBID_PUBLIC=true)")
+    """Require private=true when GITEA_FORBID_PUBLIC is on."""
+    if get_settings().gitea_forbid_public and private is not True:
+        raise ValueError(
+            "Public repos not allowed (GITEA_FORBID_PUBLIC=true). "
+            "Set private=true explicitly."
+        )
     return private
 
 
 def _enforce_visibility(visibility: str | None) -> str | None:
-    """Block public orgs when GITEA_FORBID_PUBLIC is on."""
-    if get_settings().gitea_forbid_public and visibility is not None and visibility != "private":
-        raise ValueError("Public orgs not allowed (GITEA_FORBID_PUBLIC=true)")
+    """Require visibility=private when GITEA_FORBID_PUBLIC is on."""
+    if get_settings().gitea_forbid_public and visibility != "private":
+        raise ValueError(
+            "Public orgs not allowed (GITEA_FORBID_PUBLIC=true). "
+            "Set visibility='private' explicitly."
+        )
     return visibility
 
 

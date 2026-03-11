@@ -19,8 +19,9 @@ class TestEnforcePrivate:
         with pytest.raises(ValueError, match="Public repos not allowed"):
             _enforce_private(False)
 
-    def test_none_passthrough(self):
-        assert _enforce_private(None) is None
+    def test_block_when_not_specified(self):
+        with pytest.raises(ValueError, match="Public repos not allowed"):
+            _enforce_private(None)
 
     def test_explicit_private_passes(self):
         assert _enforce_private(True) is True
@@ -35,8 +36,9 @@ class TestEnforceVisibility:
         with pytest.raises(ValueError, match="Public orgs not allowed"):
             _enforce_visibility("limited")
 
-    def test_none_passthrough(self):
-        assert _enforce_visibility(None) is None
+    def test_block_when_not_specified(self):
+        with pytest.raises(ValueError, match="Public orgs not allowed"):
+            _enforce_visibility(None)
 
     def test_explicit_private_passes(self):
         assert _enforce_visibility("private") == "private"
@@ -48,7 +50,7 @@ class TestForbidPublicOff:
         _reset_settings()
         assert _enforce_private(False) is False
 
-    def test_none_stays_none(self, monkeypatch):
+    def test_none_allowed(self, monkeypatch):
         monkeypatch.setenv("GITEA_FORBID_PUBLIC", "false")
         _reset_settings()
         assert _enforce_private(None) is None
