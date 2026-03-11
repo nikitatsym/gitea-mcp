@@ -11,10 +11,12 @@ class Settings(BaseSettings):
     gitea_compact: bool = False
     gitea_require_brief: bool = True
     gitea_brief_max_length: int = 200
-    gitea_forbid_public: bool = True
 
 
 _settings: Settings | None = None
+
+# Not an env var — only controllable via --allow-public CLI flag.
+_allow_public: bool = False
 
 
 def get_settings() -> Settings:
@@ -22,6 +24,15 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
+
+
+def allow_public() -> bool:
+    return _allow_public
+
+
+def set_allow_public(value: bool) -> None:
+    global _allow_public
+    _allow_public = value
 
 
 def _reset_settings() -> None:

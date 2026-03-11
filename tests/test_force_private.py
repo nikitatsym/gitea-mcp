@@ -1,17 +1,16 @@
-"""Unit tests for GITEA_FORBID_PUBLIC enforcement."""
+"""Unit tests for public repo/org enforcement."""
 
 import pytest
 
-from gitea_mcp.config import _reset_settings
+from gitea_mcp.config import set_allow_public
 from gitea_mcp.server import _enforce_private, _enforce_visibility
 
 
 @pytest.fixture(autouse=True)
-def _forbid_public_on(monkeypatch):
-    monkeypatch.setenv("GITEA_FORBID_PUBLIC", "true")
-    _reset_settings()
+def _forbid_public():
+    set_allow_public(False)
     yield
-    _reset_settings()
+    set_allow_public(False)
 
 
 class TestEnforcePrivate:
@@ -44,18 +43,15 @@ class TestEnforceVisibility:
         assert _enforce_visibility("private") == "private"
 
 
-class TestForbidPublicOff:
-    def test_public_repo_allowed(self, monkeypatch):
-        monkeypatch.setenv("GITEA_FORBID_PUBLIC", "false")
-        _reset_settings()
+class TestAllowPublic:
+    def test_public_repo_allowed(self):
+        set_allow_public(True)
         assert _enforce_private(False) is False
 
-    def test_none_allowed(self, monkeypatch):
-        monkeypatch.setenv("GITEA_FORBID_PUBLIC", "false")
-        _reset_settings()
+    def test_none_allowed(self):
+        set_allow_public(True)
         assert _enforce_private(None) is None
 
-    def test_public_org_allowed(self, monkeypatch):
-        monkeypatch.setenv("GITEA_FORBID_PUBLIC", "0")
-        _reset_settings()
+    def test_public_org_allowed(self):
+        set_allow_public(True)
         assert _enforce_visibility("public") == "public"
