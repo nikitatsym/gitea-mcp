@@ -610,11 +610,9 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
             r"(/user/repos|/orgs/[^/]+/repos|/admin/users/[^/]+/repos|/repos/[^/]+/[^/]+/generate)$",
             path,
         ):
-            p["private"] = _enforce_private(p.get("private"), is_create=True)
+            p["private"] = _enforce_private(p.get("private"))
         if re.match(r"(/orgs|/admin/users/[^/]+/orgs)$", path):
-            p["visibility"] = _enforce_visibility(
-                p.get("visibility"), is_create=True
-            )
+            p["visibility"] = _enforce_visibility(p.get("visibility"))
         if "/contents/" in path and "content" in p:
             p["content"] = base64.b64encode(p["content"].encode()).decode()
         if "/wiki/" in path and "content" in p:

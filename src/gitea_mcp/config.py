@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     gitea_compact: bool = False
     gitea_require_brief: bool = True
     gitea_brief_max_length: int = 200
-    gitea_force_private: bool = False
+    gitea_forbid_public: bool = True
 
 
 _settings: Settings | None = None
