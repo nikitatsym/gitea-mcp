@@ -46,7 +46,12 @@ Or use the interactive **[Setup Page](https://nikitatsym.github.io/gitea-mcp/)**
 | `GITEA_COMPACT` | No | Set to `true` to enable compact mode (see below) |
 | `GITEA_REQUIRE_BRIEF` | No | Require `<brief>summary</brief>` tag in issue body on create/edit (default: `true`) |
 | `GITEA_BRIEF_MAX_LENGTH` | No | Max character length for brief summary (default: `200`) |
-| `GITEA_FORBID_PUBLIC` | No | Block creating public repos/orgs (default: `true`) |
+
+By default, creating public repos and orgs is blocked — agents must pass `private=true` explicitly. To allow public repos, add `--allow-public` to the command args:
+
+```json
+"args": ["--refresh", "--extra-index-url", "https://nikitatsym.github.io/gitea-mcp/simple", "gitea-mcp", "--allow-public"]
+```
 
 ## Compact Mode
 

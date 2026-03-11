@@ -5,7 +5,7 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 from .client import GiteaClient
-from .config import get_settings
+from .config import allow_public, get_settings
 
 mcp = FastMCP("gitea")
 _client: Optional[GiteaClient] = None
@@ -57,21 +57,19 @@ def _validate_brief(body: str | None) -> None:
 
 
 def _enforce_private(private: bool | None) -> bool | None:
-    """Require private=true when GITEA_FORBID_PUBLIC is on."""
-    if get_settings().gitea_forbid_public and private is not True:
+    """Block non-private repos unless --allow-public was passed."""
+    if not allow_public() and private is not True:
         raise ValueError(
-            "Public repos not allowed (GITEA_FORBID_PUBLIC=true). "
-            "Set private=true explicitly."
+            "Public repos not allowed. Set private=true explicitly."
         )
     return private
 
 
 def _enforce_visibility(visibility: str | None) -> str | None:
-    """Require visibility=private when GITEA_FORBID_PUBLIC is on."""
-    if get_settings().gitea_forbid_public and visibility != "private":
+    """Block non-private orgs unless --allow-public was passed."""
+    if not allow_public() and visibility != "private":
         raise ValueError(
-            "Public orgs not allowed (GITEA_FORBID_PUBLIC=true). "
-            "Set visibility='private' explicitly."
+            "Public orgs not allowed. Set visibility='private' explicitly."
         )
     return visibility
 
