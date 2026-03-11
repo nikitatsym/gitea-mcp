@@ -381,6 +381,7 @@ _ENDPOINTS = {
 
 # ── Import server.py for introspection & validation ───────────────────
 from . import server as _srv
+from .config import get_settings
 from .server import (
     _slim_issues,
     _slim_repos,
@@ -388,8 +389,8 @@ from .server import (
     _slim_comments,
     _slim_commits,
     _validate_brief,
-    _REQUIRE_BRIEF,
-    _BRIEF_MAX_LENGTH,
+    _enforce_private,
+    _enforce_visibility,
 )
 
 _TOOL_DESCS: dict[str, str] = {}
@@ -526,11 +527,12 @@ def _build_help(header: str, filter_fn) -> str:
         ]
         if matching:
             sections.append((category.upper(), matching))
+    s = get_settings()
     return _HELP_TEMPLATE.render(
         header=header,
         sections=sections,
-        require_brief=_REQUIRE_BRIEF,
-        brief_max_length=_BRIEF_MAX_LENGTH,
+        require_brief=s.gitea_require_brief,
+        brief_max_length=s.gitea_brief_max_length,
     ).rstrip()
 
 
@@ -603,6 +605,16 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
             return c._text("POST", path, json=p)
         if re.match(r"/repos/[^/]+/[^/]+/issues$", path):
             _validate_brief(p.get("body"))
+        # Enforce private repos/orgs on create
+        if re.match(
+            r"(/user/repos|/orgs/[^/]+/repos|/admin/users/[^/]+/repos|/repos/[^/]+/[^/]+/generate)$",
+            path,
+        ):
+            p["private"] = _enforce_private(p.get("private"), is_create=True)
+        if re.match(r"(/orgs|/admin/users/[^/]+/orgs)$", path):
+            p["visibility"] = _enforce_visibility(
+                p.get("visibility"), is_create=True
+            )
         if "/contents/" in path and "content" in p:
             p["content"] = base64.b64encode(p["content"].encode()).decode()
         if "/wiki/" in path and "content" in p:
@@ -619,6 +631,11 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
     if m == "PATCH":
         if re.match(r"/repos/[^/]+/[^/]+/issues/\d+$", path) and "body" in p:
             _validate_brief(p.get("body"))
+        # Enforce private repos/orgs on edit
+        if re.match(r"/repos/[^/]+/[^/]+$", path) and "private" in p:
+            p["private"] = _enforce_private(p.get("private"))
+        if re.match(r"/orgs/[^/]+$", path) and "visibility" in p:
+            p["visibility"] = _enforce_visibility(p.get("visibility"))
         if "/wiki/" in path and "content" in p:
             p["content_base64"] = base64.b64encode(
                 p.pop("content").encode()
