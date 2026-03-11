@@ -180,8 +180,8 @@ def _slim_workflow_run(run: dict) -> dict:
         "head_sha": (run.get("head_sha") or "")[:12],
         "run_number": run.get("run_number"),
         "path": run.get("path"),
-        "created_at": run.get("created_at"),
-        "updated_at": run.get("updated_at"),
+        "started_at": run.get("started_at"),
+        "completed_at": run.get("completed_at"),
     }
 
 
