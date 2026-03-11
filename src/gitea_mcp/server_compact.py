@@ -601,9 +601,10 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
                     lines = lines[-tail:]
                 text = "\n".join(lines)
             return text
-        # Default limit for list endpoints
-        if "limit" not in p and not path.rstrip("/").split("/")[-1].isdigit():
+        # Default pagination for list endpoints
+        if not path.rstrip("/").split("/")[-1].isdigit():
             p.setdefault("limit", 20)
+            p.setdefault("page", 1)
         # Brief mode for list endpoints
         brief = p.pop("brief", None)
         data = c.get(path, params=p or None)
