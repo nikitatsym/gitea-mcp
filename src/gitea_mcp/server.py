@@ -168,6 +168,56 @@ def _slim_commits(data) -> list:
     return data
 
 
+def _slim_workflow_run(run: dict) -> dict:
+    """Strip a workflow run to essential fields."""
+    return {
+        "id": run.get("id"),
+        "display_title": run.get("display_title"),
+        "status": run.get("status"),
+        "conclusion": run.get("conclusion"),
+        "event": run.get("event"),
+        "head_branch": run.get("head_branch"),
+        "head_sha": (run.get("head_sha") or "")[:12],
+        "run_number": run.get("run_number"),
+        "path": run.get("path"),
+        "created_at": run.get("created_at"),
+        "updated_at": run.get("updated_at"),
+    }
+
+
+def _slim_workflow_runs(data):
+    if isinstance(data, dict) and "workflow_runs" in data:
+        return [_slim_workflow_run(r) for r in data["workflow_runs"]]
+    if isinstance(data, list):
+        return [_slim_workflow_run(r) for r in data]
+    return data
+
+
+def _slim_job(job: dict) -> dict:
+    """Strip a workflow job to essential fields."""
+    return {
+        "id": job.get("id"),
+        "name": job.get("name"),
+        "status": job.get("status"),
+        "conclusion": job.get("conclusion"),
+        "run_id": job.get("run_id"),
+        "started_at": job.get("started_at"),
+        "completed_at": job.get("completed_at"),
+        "steps": [
+            {"name": s.get("name"), "status": s.get("status"), "conclusion": s.get("conclusion")}
+            for s in (job.get("steps") or [])
+        ],
+    }
+
+
+def _slim_jobs(data):
+    if isinstance(data, dict) and "jobs" in data:
+        return [_slim_job(j) for j in data["jobs"]]
+    if isinstance(data, list):
+        return [_slim_job(j) for j in data]
+    return data
+
+
 # ── General ──────────────────────────────────────────────────────────────────
 
 
@@ -2340,21 +2390,21 @@ def dispatch_workflow(
 @mcp.tool()
 def get_workflow_run(owner: str, repo: str, run_id: int) -> str:
     """Get a workflow run by ID."""
-    return _ok(_get_client().get(f"/repos/{owner}/{repo}/actions/runs/{run_id}"))
+    return _ok(_slim_workflow_run(_get_client().get(f"/repos/{owner}/{repo}/actions/runs/{run_id}")))
 
 
 @mcp.tool()
 def list_workflow_run_jobs(owner: str, repo: str, run_id: int) -> str:
     """List jobs for a workflow run."""
-    return _ok(
+    return _ok(_slim_jobs(
         _get_client().get(f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs")
-    )
+    ))
 
 
 @mcp.tool()
 def get_workflow_job(owner: str, repo: str, job_id: int) -> str:
     """Get a workflow job by ID."""
-    return _ok(_get_client().get(f"/repos/{owner}/{repo}/actions/jobs/{job_id}"))
+    return _ok(_slim_job(_get_client().get(f"/repos/{owner}/{repo}/actions/jobs/{job_id}")))
 
 
 @mcp.tool()
@@ -2362,12 +2412,12 @@ def get_workflow_job_logs(
     owner: str,
     repo: str,
     job_id: int,
-    tail: Optional[int] = 100,
+    tail: Optional[int] = 200,
     filter: Optional[str] = None,
 ) -> str:
     """Get logs for a workflow job.
 
-    tail (default 100): return only the last N lines. Set to 0 for full log.
+    tail (default 200): return only the last N lines. Set to 0 for full log.
     filter: regex pattern to grep log lines (e.g. 'error|fail|fatal').
     When both are set, filter is applied first, then tail."""
     text = _get_client().get_text(
