@@ -1,11 +1,11 @@
 import base64
 import json
-import os
 import re
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 from .client import GiteaClient
+from .config import get_settings
 
 mcp = FastMCP("gitea")
 _client: Optional[GiteaClient] = None
@@ -28,12 +28,6 @@ def _ok(data) -> str:
 
 
 _BRIEF_RE = re.compile(r"<brief>(.*?)</brief>", re.DOTALL)
-_REQUIRE_BRIEF = os.environ.get("GITEA_REQUIRE_BRIEF", "true").lower() not in (
-    "0",
-    "false",
-    "no",
-)
-_BRIEF_MAX_LENGTH = int(os.environ.get("GITEA_BRIEF_MAX_LENGTH", "200"))
 
 
 def _extract_brief(body: str | None) -> str | None:
@@ -46,7 +40,8 @@ def _extract_brief(body: str | None) -> str | None:
 
 def _validate_brief(body: str | None) -> None:
     """Raise ValueError if brief requirement is on and body lacks a valid <brief> tag."""
-    if not _REQUIRE_BRIEF:
+    s = get_settings()
+    if not s.gitea_require_brief:
         return
     if not body or not _BRIEF_RE.search(body):
         raise ValueError(
@@ -54,11 +49,29 @@ def _validate_brief(body: str | None) -> None:
             "Add it at the top of the body text."
         )
     brief = _extract_brief(body)
-    if brief and len(brief) > _BRIEF_MAX_LENGTH:
+    if brief and len(brief) > s.gitea_brief_max_length:
         raise ValueError(
-            f"<brief> too long: {len(brief)} chars, max {_BRIEF_MAX_LENGTH}. "
+            f"<brief> too long: {len(brief)} chars, max {s.gitea_brief_max_length}. "
             "Keep it to a concise one-liner."
         )
+
+
+def _enforce_private(private: bool | None, is_create: bool = False) -> bool | None:
+    """Enforce GITEA_FORCE_PRIVATE: block public repos, default to private on create."""
+    if not get_settings().gitea_force_private:
+        return private
+    if private is False:
+        raise ValueError("Public repos not allowed (GITEA_FORCE_PRIVATE=true)")
+    return True if is_create else private
+
+
+def _enforce_visibility(visibility: str | None, is_create: bool = False) -> str | None:
+    """Enforce GITEA_FORCE_PRIVATE: block public orgs, default to private on create."""
+    if not get_settings().gitea_force_private:
+        return visibility
+    if visibility is not None and visibility != "private":
+        raise ValueError("Public orgs not allowed (GITEA_FORCE_PRIVATE=true)")
+    return "private" if is_create else visibility
 
 
 def _slim_issue(issue: dict) -> dict:
@@ -469,6 +482,7 @@ def create_repo(
     default_branch: Optional[str] = None,
 ) -> str:
     """Create a new repository for the authenticated user."""
+    private = _enforce_private(private, is_create=True)
     body: dict = {"name": name}
     if description is not None:
         body["description"] = description
@@ -508,6 +522,7 @@ def edit_repo(
     archived: Optional[bool] = None,
 ) -> str:
     """Edit a repository's properties."""
+    private = _enforce_private(private)
     body: dict = {}
     if name is not None:
         body["name"] = name
@@ -2472,6 +2487,7 @@ def create_org(
     visibility: Optional[str] = None,
 ) -> str:
     """Create an organization."""
+    visibility = _enforce_visibility(visibility, is_create=True)
     body: dict = {"username": username}
     if full_name is not None:
         body["full_name"] = full_name
@@ -2493,6 +2509,7 @@ def edit_org(
     visibility: Optional[str] = None,
 ) -> str:
     """Edit an organization's properties."""
+    visibility = _enforce_visibility(visibility)
     body: dict = {}
     if full_name is not None:
         body["full_name"] = full_name
@@ -2577,6 +2594,7 @@ def create_org_repo(
     default_branch: Optional[str] = None,
 ) -> str:
     """Create a repository in an organization."""
+    private = _enforce_private(private, is_create=True)
     body: dict = {"name": name}
     if description is not None:
         body["description"] = description
@@ -3073,6 +3091,7 @@ def admin_create_org(
     visibility: Optional[str] = None,
 ) -> str:
     """Create an organization (admin only). owner_name is the user who will own the org."""
+    visibility = _enforce_visibility(visibility, is_create=True)
     body: dict = {"username": username}
     if full_name is not None:
         body["full_name"] = full_name
@@ -3094,6 +3113,7 @@ def admin_create_repo_for_user(
     auto_init: Optional[bool] = None,
 ) -> str:
     """Create a repository for a user (admin only)."""
+    private = _enforce_private(private, is_create=True)
     body: dict = {"name": name}
     if description is not None:
         body["description"] = description
@@ -3566,6 +3586,7 @@ def create_repo_from_template(
     labels: Optional[bool] = None,
 ) -> str:
     """Create a repository from a template."""
+    private = _enforce_private(private, is_create=True)
     body: dict = {"name": name, "owner": owner}
     if description is not None:
         body["description"] = description
