@@ -56,22 +56,18 @@ def _validate_brief(body: str | None) -> None:
         )
 
 
-def _enforce_private(private: bool | None, is_create: bool = False) -> bool | None:
-    """Enforce GITEA_FORCE_PRIVATE: block public repos, default to private on create."""
-    if not get_settings().gitea_force_private:
-        return private
-    if private is False:
-        raise ValueError("Public repos not allowed (GITEA_FORCE_PRIVATE=true)")
-    return True if is_create else private
+def _enforce_private(private: bool | None) -> bool | None:
+    """Block public repos when GITEA_FORBID_PUBLIC is on."""
+    if get_settings().gitea_forbid_public and private is False:
+        raise ValueError("Public repos not allowed (GITEA_FORBID_PUBLIC=true)")
+    return private
 
 
-def _enforce_visibility(visibility: str | None, is_create: bool = False) -> str | None:
-    """Enforce GITEA_FORCE_PRIVATE: block public orgs, default to private on create."""
-    if not get_settings().gitea_force_private:
-        return visibility
-    if visibility is not None and visibility != "private":
-        raise ValueError("Public orgs not allowed (GITEA_FORCE_PRIVATE=true)")
-    return "private" if is_create else visibility
+def _enforce_visibility(visibility: str | None) -> str | None:
+    """Block public orgs when GITEA_FORBID_PUBLIC is on."""
+    if get_settings().gitea_forbid_public and visibility is not None and visibility != "private":
+        raise ValueError("Public orgs not allowed (GITEA_FORBID_PUBLIC=true)")
+    return visibility
 
 
 def _slim_issue(issue: dict) -> dict:
@@ -482,7 +478,7 @@ def create_repo(
     default_branch: Optional[str] = None,
 ) -> str:
     """Create a new repository for the authenticated user."""
-    private = _enforce_private(private, is_create=True)
+    private = _enforce_private(private)
     body: dict = {"name": name}
     if description is not None:
         body["description"] = description
@@ -2487,7 +2483,7 @@ def create_org(
     visibility: Optional[str] = None,
 ) -> str:
     """Create an organization."""
-    visibility = _enforce_visibility(visibility, is_create=True)
+    visibility = _enforce_visibility(visibility)
     body: dict = {"username": username}
     if full_name is not None:
         body["full_name"] = full_name
@@ -2594,7 +2590,7 @@ def create_org_repo(
     default_branch: Optional[str] = None,
 ) -> str:
     """Create a repository in an organization."""
-    private = _enforce_private(private, is_create=True)
+    private = _enforce_private(private)
     body: dict = {"name": name}
     if description is not None:
         body["description"] = description
@@ -3091,7 +3087,7 @@ def admin_create_org(
     visibility: Optional[str] = None,
 ) -> str:
     """Create an organization (admin only). owner_name is the user who will own the org."""
-    visibility = _enforce_visibility(visibility, is_create=True)
+    visibility = _enforce_visibility(visibility)
     body: dict = {"username": username}
     if full_name is not None:
         body["full_name"] = full_name
@@ -3113,7 +3109,7 @@ def admin_create_repo_for_user(
     auto_init: Optional[bool] = None,
 ) -> str:
     """Create a repository for a user (admin only)."""
-    private = _enforce_private(private, is_create=True)
+    private = _enforce_private(private)
     body: dict = {"name": name}
     if description is not None:
         body["description"] = description
@@ -3586,7 +3582,7 @@ def create_repo_from_template(
     labels: Optional[bool] = None,
 ) -> str:
     """Create a repository from a template."""
-    private = _enforce_private(private, is_create=True)
+    private = _enforce_private(private)
     body: dict = {"name": name, "owner": owner}
     if description is not None:
         body["description"] = description

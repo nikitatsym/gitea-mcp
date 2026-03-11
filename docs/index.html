@@ -225,7 +225,7 @@
         "GITEA_TOKEN": "<span class="placeholder">YOUR_API_TOKEN</span>",
         "GITEA_COMPACT": "<span class="placeholder">true</span>",  <span style="color:var(--muted)">// optional: collapses 300 tools into 6</span>
         "GITEA_REQUIRE_BRIEF": "<span class="placeholder">true</span>",  <span style="color:var(--muted)">// optional: require &lt;brief&gt; tag in issues</span>
-        "GITEA_FORCE_PRIVATE": "<span class="placeholder">false</span>"  <span style="color:var(--muted)">// optional: force all repos/orgs to be private</span>
+        "GITEA_FORBID_PUBLIC": "<span class="placeholder">true</span>"  <span style="color:var(--muted)">// optional: block creating public repos/orgs</span>
       }
     }
   }
@@ -259,8 +259,8 @@
     </div>
 
     <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:1rem;color:var(--text);font-size:0.9rem;font-weight:400">
-      <input type="checkbox" id="force-private" style="width:auto;margin:0">
-      Force private <span style="color:var(--muted);font-size:0.82rem">&mdash; prevent creating public repos/orgs</span>
+      <input type="checkbox" id="forbid-public" checked style="width:auto;margin:0">
+      Forbid public <span style="color:var(--muted);font-size:0.82rem">&mdash; block creating public repos/orgs</span>
     </label>
 
     <div class="btn-row">
@@ -312,7 +312,7 @@ function generate() {
   const compact = document.getElementById('compact-mode').checked;
   const requireBrief = document.getElementById('require-brief').checked;
   const briefMax = document.getElementById('brief-max').value.trim();
-  const forcePrivate = document.getElementById('force-private').checked;
+  const forbidPublic = document.getElementById('forbid-public').checked;
 
   const env = {
     GITEA_URL: url,
@@ -323,7 +323,7 @@ function generate() {
     env.GITEA_REQUIRE_BRIEF = "true";
     if (briefMax && briefMax !== "200") env.GITEA_BRIEF_MAX_LENGTH = briefMax;
   }
-  if (forcePrivate) env.GITEA_FORCE_PRIVATE = "true";
+  if (!forbidPublic) env.GITEA_FORBID_PUBLIC = "false";
 
   const config = {
     mcpServers: {
