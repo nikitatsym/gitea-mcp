@@ -388,6 +388,10 @@ from .server import (
     _slim_notifications,
     _slim_comments,
     _slim_commits,
+    _slim_workflow_runs,
+    _slim_jobs,
+    _slim_job,
+    _slim_workflow_run,
     _validate_brief,
     _enforce_private,
     _enforce_visibility,
@@ -448,6 +452,14 @@ _BRIEF_RULES: list[tuple[re.Pattern, callable]] = [
          "published_at": r.get("published_at")}
         for r in data
     ] if isinstance(data, list) else data),
+    # Workflow runs
+    (re.compile(r"^/repos/[^/]+/[^/]+/actions/runs$"), _slim_workflow_runs),
+    # Single workflow run
+    (re.compile(r"^/repos/[^/]+/[^/]+/actions/runs/\d+$"), _slim_workflow_run),
+    # Workflow run jobs
+    (re.compile(r"^/repos/[^/]+/[^/]+/actions/runs/\d+/jobs$"), _slim_jobs),
+    # Single job
+    (re.compile(r"^/repos/[^/]+/[^/]+/actions/jobs/\d+$"), _slim_job),
 ]
 
 
@@ -501,7 +513,7 @@ NOTES:
 {% if require_brief %}
   - Issues: body MUST contain <brief>summary</brief> tag (max {{ brief_max_length }} chars).
 {% endif %}
-  - Job logs: GET .../actions/jobs/{job_id}/logs returns last 100 lines
+  - Job logs: GET .../actions/jobs/{job_id}/logs returns last 200 lines
     by default. Pass {"tail":N} to change (0 = full log).
     Pass {"filter":"error|fail"} to grep lines by regex pattern.
     When both set, filter applies first, then tail.
@@ -577,7 +589,7 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
 
     if m == "GET":
         if _is_text_path(path):
-            tail = p.pop("tail", 100 if "/logs" in path else 0)
+            tail = p.pop("tail", 200 if "/logs" in path else 0)
             log_filter = p.pop("filter", None)
             text = c.get_text(path, params=p or None)
             if log_filter or tail:
@@ -589,6 +601,9 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
                     lines = lines[-tail:]
                 text = "\n".join(lines)
             return text
+        # Default limit for list endpoints
+        if "limit" not in p and not path.rstrip("/").split("/")[-1].isdigit():
+            p.setdefault("limit", 20)
         # Brief mode for list endpoints
         brief = p.pop("brief", None)
         data = c.get(path, params=p or None)
