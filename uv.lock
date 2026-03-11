@@ -226,6 +226,7 @@ dependencies = [
     { name = "httpx" },
     { name = "jinja2" },
     { name = "mcp" },
+    { name = "pydantic-settings" },
 ]
 
 [package.dev-dependencies]
@@ -238,6 +239,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "mcp", specifier = ">=1.0.0" },
+    { name = "pydantic-settings", specifier = ">=2.0" },
 ]
 
 [package.metadata.requires-dev]

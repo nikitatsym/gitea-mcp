@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os
-
 import httpx
+
+from .config import get_settings
 
 _DEFAULT_LIMIT = 50
 
@@ -18,8 +18,9 @@ class GiteaError(Exception):
 
 class GiteaClient:
     def __init__(self, base_url: str | None = None, token: str | None = None):
-        self._base = (base_url or os.environ["GITEA_URL"]).rstrip("/")
-        self._token = token or os.environ["GITEA_TOKEN"]
+        s = get_settings()
+        self._base = (base_url or s.gitea_url).rstrip("/")
+        self._token = token or s.gitea_token
         self._http = httpx.Client(
             base_url=f"{self._base}/api/v1",
             headers={"Authorization": f"token {self._token}"},
