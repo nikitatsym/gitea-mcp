@@ -605,14 +605,14 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
             return c._text("POST", path, json=p)
         if re.match(r"/repos/[^/]+/[^/]+/issues$", path):
             _validate_brief(p.get("body"))
-        # Enforce private repos/orgs on create
+        # Enforce private repos/orgs on create — raises if blocked
         if re.match(
             r"(/user/repos|/orgs/[^/]+/repos|/admin/users/[^/]+/repos|/repos/[^/]+/[^/]+/generate)$",
             path,
         ):
-            p["private"] = _enforce_private(p.get("private"))
+            _enforce_private(p.get("private"))
         if re.match(r"(/orgs|/admin/users/[^/]+/orgs)$", path):
-            p["visibility"] = _enforce_visibility(p.get("visibility"))
+            _enforce_visibility(p.get("visibility"))
         if "/contents/" in path and "content" in p:
             p["content"] = base64.b64encode(p["content"].encode()).decode()
         if "/wiki/" in path and "content" in p:
@@ -629,11 +629,11 @@ def _dispatch(method: str, path: str, params_str: str) -> str:
     if m == "PATCH":
         if re.match(r"/repos/[^/]+/[^/]+/issues/\d+$", path) and "body" in p:
             _validate_brief(p.get("body"))
-        # Enforce private repos/orgs on edit
+        # Enforce private repos/orgs on edit — raises if blocked
         if re.match(r"/repos/[^/]+/[^/]+$", path) and "private" in p:
-            p["private"] = _enforce_private(p.get("private"))
+            _enforce_private(p.get("private"))
         if re.match(r"/orgs/[^/]+$", path) and "visibility" in p:
-            p["visibility"] = _enforce_visibility(p.get("visibility"))
+            _enforce_visibility(p.get("visibility"))
         if "/wiki/" in path and "content" in p:
             p["content_base64"] = base64.b64encode(
                 p.pop("content").encode()
