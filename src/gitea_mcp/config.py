@@ -8,9 +8,6 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     gitea_url: str = ""
     gitea_token: str = ""
-    gitea_compact: bool = False
-    gitea_require_brief: bool = True
-    gitea_brief_max_length: int = 200
 
 
 _settings: Settings | None = None

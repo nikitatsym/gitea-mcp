@@ -3,7 +3,7 @@
 import pytest
 
 from gitea_mcp.config import set_allow_public
-from gitea_mcp.server import _enforce_private, _enforce_visibility
+from gitea_mcp.prepare import _enforce_private, _enforce_visibility
 
 
 @pytest.fixture(autouse=True)
