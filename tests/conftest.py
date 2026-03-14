@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import pytest
 
-from gitea_mcp.server import mcp
+from gitea_mcp.server import mcp, _all_grouped, _to_pascal
 
 COMPOSE_DIR = Path(__file__).parent
 GITEA_URL = "http://localhost:3000"
@@ -104,12 +104,22 @@ class AgentSimulator:
             self._tools[tool.name] = tool.fn
 
     def call(self, tool_name: str, **kwargs) -> Any:
-        """Call an MCP tool by name and return parsed result."""
-        fn = self._tools.get(tool_name)
-        if fn is None:
-            raise ValueError(f"Unknown tool: {tool_name}. Available: {sorted(self._tools.keys())}")
+        """Call an MCP tool by name and return parsed result.
 
-        result_str = fn(**kwargs)
+        Converts snake_case tool_name to PascalCase operation, finds the
+        correct meta-tool group, and dispatches with kwargs as params dict.
+        """
+        pascal = _to_pascal(tool_name)
+        if pascal in _all_grouped:
+            group = _all_grouped[pascal]
+            fn = self._tools[group]
+            result_str = fn(operation=pascal, params=kwargs)
+        else:
+            # Direct tool (ROOT group)
+            fn = self._tools.get(tool_name)
+            if fn is None:
+                raise ValueError(f"Unknown tool: {tool_name}. Available: {sorted(self._tools.keys())}")
+            result_str = fn(**kwargs)
 
         self.call_log.append({"tool": tool_name, "kwargs": kwargs, "result": result_str})
 
@@ -120,11 +130,17 @@ class AgentSimulator:
 
     def call_raw(self, tool_name: str, **kwargs) -> str:
         """Call an MCP tool and return raw string result."""
-        fn = self._tools.get(tool_name)
-        if fn is None:
-            raise ValueError(f"Unknown tool: {tool_name}")
+        pascal = _to_pascal(tool_name)
+        if pascal in _all_grouped:
+            group = _all_grouped[pascal]
+            fn = self._tools[group]
+            result_str = fn(operation=pascal, params=kwargs)
+        else:
+            fn = self._tools.get(tool_name)
+            if fn is None:
+                raise ValueError(f"Unknown tool: {tool_name}")
+            result_str = fn(**kwargs)
 
-        result_str = fn(**kwargs)
         self.call_log.append({"tool": tool_name, "kwargs": kwargs, "result": result_str})
         return result_str
 
@@ -176,11 +192,11 @@ def configure_env(gitea_instance, gitea_token):
     os.environ["GITEA_TOKEN"] = gitea_token
 
     # Reset the cached client so it picks up new env
-    import gitea_mcp.server as srv
+    import gitea_mcp.tools as _tools
 
-    srv._client = None
+    _tools._client = None
     yield
-    srv._client = None
+    _tools._client = None
 
 
 @pytest.fixture(scope="session")

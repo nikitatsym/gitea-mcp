@@ -223,8 +223,7 @@
       "env": {
         "GITEA_URL": "<span class="placeholder">YOUR_GITEA_URL</span>",
         "GITEA_TOKEN": "<span class="placeholder">YOUR_API_TOKEN</span>",
-        "GITEA_COMPACT": "<span class="placeholder">true</span>",  <span style="color:var(--muted)">// optional: collapses 300 tools into 6</span>
-        "GITEA_REQUIRE_BRIEF": "<span class="placeholder">true</span>"  <span style="color:var(--muted)">// optional: require &lt;brief&gt; tag in issues</span>
+        "MCP_GITEA_BRIEF_MAX": "<span class="placeholder">100</span>"  <span style="color:var(--muted)">// 0=off, &gt;0=require &lt;brief&gt; + cap length</span>
       }
     }
   }
@@ -243,18 +242,10 @@
     <input type="password" id="gitea-token" placeholder="paste your token here" spellcheck="false">
     <p class="hint">Personal access token from Gitea &rarr; Settings &rarr; Applications.</p>
 
-    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:1rem;color:var(--text);font-size:0.9rem;font-weight:400">
-      <input type="checkbox" id="compact-mode" style="width:auto;margin:0">
-      Compact mode <span style="color:var(--muted);font-size:0.82rem">&mdash; collapses 300 tools into 6 meta-tools</span>
-    </label>
-
-    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.35rem;color:var(--text);font-size:0.9rem;font-weight:400">
-      <input type="checkbox" id="require-brief" checked style="width:auto;margin:0" onchange="document.getElementById('brief-max-row').style.display=this.checked?'flex':'none'">
-      Require &lt;brief&gt; tag <span style="color:var(--muted);font-size:0.82rem">&mdash; agents must add &lt;brief&gt;summary&lt;/brief&gt; in issue body</span>
-    </label>
-    <div id="brief-max-row" style="display:flex;align-items:center;gap:0.5rem;margin-left:1.5rem;margin-bottom:1rem">
-      <label for="brief-max" style="display:inline;margin:0;font-size:0.82rem;white-space:nowrap">Max length:</label>
-      <input type="text" id="brief-max" value="200" style="width:5rem;padding:0.35rem 0.5rem;font-size:0.82rem;margin:0">
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem">
+      <label for="brief-max" style="display:inline;margin:0;font-size:0.9rem;white-space:nowrap;color:var(--text);font-weight:400">Brief max length:</label>
+      <input type="text" id="brief-max" value="100" style="width:5rem;padding:0.35rem 0.5rem;font-size:0.82rem;margin:0">
+      <span style="color:var(--muted);font-size:0.82rem">(0 = off, &gt;0 = require &lt;brief&gt; tag in issues)</span>
     </div>
 
     <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:1rem;color:var(--text);font-size:0.9rem;font-weight:400">
@@ -295,7 +286,7 @@
   </div>
 
   <footer>
-    <a href="https://github.com/nikitatsym/gitea-mcp">gitea-mcp</a> &mdash; 300 tools, full Gitea API coverage for autonomous agents.
+    <a href="https://github.com/nikitatsym/gitea-mcp">gitea-mcp</a> &mdash; 6 meta-tools, 300 operations, full Gitea API coverage for autonomous agents.
   </footer>
 
 </div>
@@ -308,8 +299,6 @@ function generate() {
   if (!url) { alert('Please enter your Gitea URL.'); return; }
   if (!token) { alert('Please enter your API token.'); return; }
 
-  const compact = document.getElementById('compact-mode').checked;
-  const requireBrief = document.getElementById('require-brief').checked;
   const briefMax = document.getElementById('brief-max').value.trim();
   const allowPublic = document.getElementById('allow-public').checked;
 
@@ -317,11 +306,7 @@ function generate() {
     GITEA_URL: url,
     GITEA_TOKEN: token
   };
-  if (compact) env.GITEA_COMPACT = "true";
-  if (requireBrief) {
-    env.GITEA_REQUIRE_BRIEF = "true";
-    if (briefMax && briefMax !== "200") env.GITEA_BRIEF_MAX_LENGTH = briefMax;
-  }
+  if (briefMax && briefMax !== "100") env.MCP_GITEA_BRIEF_MAX = briefMax;
 
   const args = ["--refresh", "--extra-index-url", "https://nikitatsym.github.io/gitea-mcp/simple", "gitea-mcp"];
   if (allowPublic) args.push("--allow-public");
