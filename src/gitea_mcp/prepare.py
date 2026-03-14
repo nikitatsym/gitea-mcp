@@ -1,6 +1,5 @@
 """Shared helpers: slim functions, validation, response formatting."""
 
-import json
 import os
 import re
 
@@ -54,13 +53,13 @@ def _enforce_visibility(visibility: str | None) -> str | None:
     return visibility
 
 
-def _ok(data) -> str:
+def _ok(data):
     if data is None:
-        return json.dumps({"status": "ok"})
+        return {"status": "ok"}
     # Gitea search endpoints wrap results in {"ok": true, "data": [...]}
     if isinstance(data, dict) and "ok" in data and "data" in data:
         data = data["data"]
-    return json.dumps(data, indent=2, ensure_ascii=False)
+    return data
 
 
 # ── Slim functions ───────────────────────────────────────────────────────────
