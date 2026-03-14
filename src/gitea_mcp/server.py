@@ -1,7 +1,6 @@
 """Gitea MCP server — auto-discovery, grouping, and dispatch."""
 
 import inspect
-import json
 import typing
 
 from mcp.server.fastmcp import FastMCP
@@ -38,7 +37,7 @@ def _is_bool_hint(hint) -> bool:
     return bool in args if args else False
 
 
-def _coerce_call(fn, params: dict) -> str:
+def _coerce_call(fn, params: dict):
     """Coerce JSON-parsed params to match function signature, then call fn."""
     sig = inspect.signature(fn)
     hints = typing.get_type_hints(fn)
@@ -75,19 +74,19 @@ def _build_help(group_name: str) -> str:
     return f"{len(lines)} operations available:\n" + "\n".join(lines)
 
 
-def _dispatch(operation: str, group_name: str, params: dict) -> str:
+def _dispatch(operation: str, group_name: str, params: dict):
     """Dispatch an operation call to the right function."""
     ops = _group_ops[group_name]
     if operation not in ops:
         if operation in _all_grouped:
             correct = _all_grouped[operation]
-            return json.dumps({
+            return {
                 "error": f"{operation} belongs to {correct}. Use {correct}() instead."
-            })
-        return json.dumps({
+            }
+        return {
             "error": f"Unknown operation: {operation}. "
                      "Use operation=\"help\" to list available operations."
-        })
+        }
 
     fn = ops[operation]
     return _coerce_call(fn, params)
@@ -119,7 +118,7 @@ def _register_tools():
             _all_grouped[pascal_name] = group_name
 
         def _make_tool(gname, gdoc):
-            def tool_fn(operation: str, params: dict = {}) -> str:
+            def tool_fn(operation: str, params: dict = {}):
                 if operation == "help":
                     return _build_help(gname)
                 return _dispatch(operation, gname, params)
