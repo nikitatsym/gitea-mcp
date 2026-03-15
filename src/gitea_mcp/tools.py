@@ -10,7 +10,7 @@ from .prepare import (
     _slim_issues, _slim_repos, _slim_notifications, _slim_comments,
     _slim_commits, _slim_workflow_run, _slim_workflow_runs, _slim_job, _slim_jobs,
 )
-from .registry import Group, _op
+from .registry import ROOT, Group, _op
 
 _client: Optional[GiteaClient] = None
 
@@ -34,10 +34,11 @@ gitea_admin_write = Group("gitea_admin_write", "Gitea admin write operations (PO
 # ── General ──────────────────────────────────────────────────────────────────
 
 
-@_op(gitea_read)
-def get_version():
-    """Get the Gitea server version."""
-    return _ok(_get_client().get("/version"))
+@_op(ROOT)
+def gitea_version():
+    """Get the Gitea MCP server version and service version."""
+    from importlib.metadata import version
+    return {"mcp": version("gitea-mcp"), "service": _get_client().get("/version")}
 
 @_op(gitea_read)
 def get_current_user():
