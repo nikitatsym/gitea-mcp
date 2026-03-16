@@ -2033,20 +2033,39 @@ def dispatch_workflow(
     )
 
 @_op(gitea_read)
+def list_workflow_runs(
+    owner: str,
+    repo: str,
+    limit: Optional[int] = 20,
+    page: Optional[int] = 1,
+    brief: bool = True,
+):
+    """List workflow runs for a repository.
+
+    brief (default True): compact view — id, title, status, conclusion,
+    event, branch, sha, run_number, path, timestamps.
+    Set brief=False for full Gitea API response objects."""
+    params: dict = {"limit": limit, "page": page}
+    data = _get_client().get(f"/repos/{owner}/{repo}/actions/runs", params=params)
+    if brief:
+        data = _slim_workflow_runs(data)
+    return _ok(data)
+
+@_op(gitea_read)
 def get_workflow_run(owner: str, repo: str, run_id: int):
-    """Get a workflow run by ID."""
+    """Get a workflow run by internal ID (not run_number). Use ListWorkflowRuns to find the id."""
     return _ok(_slim_workflow_run(_get_client().get(f"/repos/{owner}/{repo}/actions/runs/{run_id}")))
 
 @_op(gitea_read)
 def list_workflow_run_jobs(owner: str, repo: str, run_id: int):
-    """List jobs for a workflow run."""
+    """List jobs for a workflow run by internal ID (not run_number). Use ListWorkflowRuns to find the id."""
     return _ok(_slim_jobs(
         _get_client().get(f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs")
     ))
 
 @_op(gitea_read)
 def get_workflow_job(owner: str, repo: str, job_id: int):
-    """Get a workflow job by ID."""
+    """Get a workflow job by its ID."""
     return _ok(_slim_job(_get_client().get(f"/repos/{owner}/{repo}/actions/jobs/{job_id}")))
 
 @_op(gitea_read)
