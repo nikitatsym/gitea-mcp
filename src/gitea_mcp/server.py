@@ -63,15 +63,24 @@ _all_grouped: dict[str, str] = {}   # {PascalName: group_name}
 
 
 def _build_help(group_name: str) -> str:
-    """Build help text from operation functions in a group."""
+    """Build help text from operation functions in a group.
+
+    First docstring line is the op summary; the rest is indented under it.
+    Non-type constraints (formats, conditional rules, opaque-string formats)
+    live there so callers learn from help, not from error messages.
+    """
     ops = _group_ops[group_name]
     lines = []
     for pascal_name, fn in ops.items():
         sig = inspect.signature(fn)
         params = ", ".join(sig.parameters.keys())
-        doc = fn.__doc__.split("\n")[0]
-        lines.append(f"  {pascal_name}({params}) — {doc}")
-    return f"{len(lines)} operations available:\n" + "\n".join(lines)
+        doc = inspect.getdoc(fn) or ""
+        head, _, body = doc.partition("\n\n")
+        head = " ".join(head.split())
+        lines.append(f"  {pascal_name}({params}) — {head}")
+        for body_line in body.rstrip().splitlines():
+            lines.append(f"    {body_line}" if body_line else "")
+    return f"{len(ops)} operations available:\n" + "\n".join(lines)
 
 
 def _dispatch(operation: str, group_name: str, params: dict):
