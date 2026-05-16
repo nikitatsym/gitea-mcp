@@ -97,12 +97,7 @@ def search_users(
     page: Optional[int] = None,
 ):
     """Search for users by keyword."""
-    params: dict = {"q": query}
-    if limit is not None:
-        params["limit"] = limit
-    if page is not None:
-        params["page"] = page
-    return _ok(_get_client().get("/users/search", params=params))
+    return _call("GET", "/users/search", locals(), rename={"query": "q"})
 
 @_op(gitea_read)
 def get_user(username: str):
@@ -190,8 +185,7 @@ def create_oauth2_app(
     confidential_client: Optional[bool] = None,
 ):
     """Create an OAuth2 application for the current user."""
-    body = _body(locals())
-    return _ok(_get_client().post("/user/applications/oauth2", json=body))
+    return _call("POST", "/user/applications/oauth2", locals())
 
 @_op(gitea_read)
 def get_oauth2_app(app_id: int):
@@ -206,10 +200,7 @@ def edit_oauth2_app(
     confidential_client: Optional[bool] = None,
 ):
     """Edit an OAuth2 application."""
-    body = _body(locals(), exclude=("app_id",))
-    return _ok(
-        _get_client().patch(f"/user/applications/oauth2/{app_id}", json=body)
-    )
+    return _call("PATCH", "/user/applications/oauth2/{app_id}", locals())
 
 @_op(gitea_delete)
 def delete_oauth2_app(app_id: int):
@@ -244,8 +235,7 @@ def update_user_settings(
     diff_view_style: Optional[str] = None,
 ):
     """Update the current user's settings."""
-    body = _body(locals())
-    return _ok(_get_client().patch("/user/settings", json=body))
+    return _call("PATCH", "/user/settings", locals())
 
 # ── SSH / GPG Keys ──────────────────────────────────────────────────────────
 
@@ -323,22 +313,7 @@ def create_repo(
 ):
     """Create a new repository for the authenticated user."""
     private = _enforce_private(private)
-    body: dict = {"name": name}
-    if description is not None:
-        body["description"] = description
-    if private is not None:
-        body["private"] = private
-    if auto_init is not None:
-        body["auto_init"] = auto_init
-    if gitignores is not None:
-        body["gitignores"] = gitignores
-    if license is not None:
-        body["license"] = license
-    if readme is not None:
-        body["readme"] = readme
-    if default_branch is not None:
-        body["default_branch"] = default_branch
-    return _ok(_get_client().post("/user/repos", json=body))
+    return _call("POST", "/user/repos", locals())
 
 @_op(gitea_read)
 def get_repo(owner: str, repo: str):
@@ -365,8 +340,7 @@ def edit_repo(
 ):
     """Edit a repository's properties."""
     private = _enforce_private(private)
-    body = _body(locals(), exclude=("owner", "repo"))
-    return _ok(_get_client().patch(f"/repos/{owner}/{repo}", json=body))
+    return _call("PATCH", "/repos/{owner}/{repo}", locals())
 
 @_op(gitea_delete)
 def delete_repo(owner: str, repo: str):
@@ -381,8 +355,7 @@ def fork_repo(
     name: Optional[str] = None,
 ):
     """Fork a repository."""
-    body = _body(locals(), exclude=("owner", "repo"))
-    return _ok(_get_client().post(f"/repos/{owner}/{repo}/forks", json=body))
+    return _call("POST", "/repos/{owner}/{repo}/forks", locals())
 
 @_op(gitea_read)
 def list_forks(owner: str, repo: str, brief: bool = True):
@@ -550,10 +523,7 @@ def edit_repo_webhook(
     active: Optional[bool] = None,
 ):
     """Edit a repository webhook."""
-    body = _body(locals(), exclude=("owner", "repo", "hook_id"))
-    return _ok(
-        _get_client().patch(f"/repos/{owner}/{repo}/hooks/{hook_id}", json=body)
-    )
+    return _call("PATCH", "/repos/{owner}/{repo}/hooks/{hook_id}", locals())
 
 @_op(gitea_delete)
 def delete_repo_webhook(owner: str, repo: str, hook_id: int):
@@ -599,8 +569,7 @@ def edit_org_webhook(
     active: Optional[bool] = None,
 ):
     """Edit an organization webhook."""
-    body = _body(locals(), exclude=("org", "hook_id"))
-    return _ok(_get_client().patch(f"/orgs/{org}/hooks/{hook_id}", json=body))
+    return _call("PATCH", "/orgs/{org}/hooks/{hook_id}", locals())
 
 @_op(gitea_delete)
 def delete_org_webhook(org: str, hook_id: int):
@@ -648,12 +617,7 @@ def get_file_content(
     ref: Optional[str] = None,
 ):
     """Get the metadata and content of a file in a repository."""
-    params = _body(locals(), exclude=("owner", "repo", "filepath"))
-    return _ok(
-        _get_client().get(
-            f"/repos/{owner}/{repo}/contents/{filepath}", params=params or None
-        )
-    )
+    return _call("GET", "/repos/{owner}/{repo}/contents/{filepath}", locals())
 
 @_op(gitea_create)
 def create_file(
@@ -734,12 +698,7 @@ def get_directory_content(
     ref: Optional[str] = None,
 ):
     """Get the contents of a directory in a repository."""
-    params = _body(locals(), exclude=("owner", "repo", "dirpath"))
-    return _ok(
-        _get_client().get(
-            f"/repos/{owner}/{repo}/contents/{dirpath}", params=params or None
-        )
-    )
+    return _call("GET", "/repos/{owner}/{repo}/contents/{dirpath}", locals())
 
 @_op(gitea_read)
 def get_raw_file(
@@ -776,12 +735,7 @@ def create_branch(
     old_ref_name: Optional[str] = None,
 ):
     """Create a new branch in a repository."""
-    body: dict = {"new_branch_name": new_branch_name}
-    if old_branch_name is not None:
-        body["old_branch_name"] = old_branch_name
-    if old_ref_name is not None:
-        body["old_ref_name"] = old_ref_name
-    return _ok(_get_client().post(f"/repos/{owner}/{repo}/branches", json=body))
+    return _call("POST", "/repos/{owner}/{repo}/branches", locals())
 
 @_op(gitea_delete)
 def delete_branch(owner: str, repo: str, branch: str):
@@ -808,26 +762,7 @@ def create_branch_protection(
     status_check_contexts: Optional[list[str]] = None,
 ):
     """Create a branch protection rule for a repository."""
-    body: dict = {"branch_name": branch_name}
-    if enable_push is not None:
-        body["enable_push"] = enable_push
-    if enable_push_whitelist is not None:
-        body["enable_push_whitelist"] = enable_push_whitelist
-    if push_whitelist_usernames is not None:
-        body["push_whitelist_usernames"] = push_whitelist_usernames
-    if enable_merge_whitelist is not None:
-        body["enable_merge_whitelist"] = enable_merge_whitelist
-    if merge_whitelist_usernames is not None:
-        body["merge_whitelist_usernames"] = merge_whitelist_usernames
-    if required_approvals is not None:
-        body["required_approvals"] = required_approvals
-    if enable_status_check is not None:
-        body["enable_status_check"] = enable_status_check
-    if status_check_contexts is not None:
-        body["status_check_contexts"] = status_check_contexts
-    return _ok(
-        _get_client().post(f"/repos/{owner}/{repo}/branch_protections", json=body)
-    )
+    return _call("POST", "/repos/{owner}/{repo}/branch_protections", locals())
 
 @_op(gitea_read)
 def get_branch_protection(owner: str, repo: str, name: str):
@@ -851,12 +786,7 @@ def edit_branch_protection(
     status_check_contexts: Optional[list[str]] = None,
 ):
     """Edit a branch protection rule."""
-    body = _body(locals(), exclude=("owner", "repo", "name"))
-    return _ok(
-        _get_client().patch(
-            f"/repos/{owner}/{repo}/branch_protections/{name}", json=body
-        )
-    )
+    return _call("PATCH", "/repos/{owner}/{repo}/branch_protections/{name}", locals())
 
 @_op(gitea_delete)
 def delete_branch_protection(owner: str, repo: str, name: str):
@@ -882,14 +812,7 @@ def create_tag_protection(
     whitelist_teams: Optional[list[str]] = None,
 ):
     """Create a tag protection rule for a repository."""
-    body: dict = {"name_pattern": name_pattern}
-    if whitelist_usernames is not None:
-        body["whitelist_usernames"] = whitelist_usernames
-    if whitelist_teams is not None:
-        body["whitelist_teams"] = whitelist_teams
-    return _ok(
-        _get_client().post(f"/repos/{owner}/{repo}/tag_protections", json=body)
-    )
+    return _call("POST", "/repos/{owner}/{repo}/tag_protections", locals())
 
 @_op(gitea_read)
 def get_tag_protection(owner: str, repo: str, tag_protection_id: int):
@@ -910,12 +833,7 @@ def edit_tag_protection(
     whitelist_teams: Optional[list[str]] = None,
 ):
     """Edit a tag protection rule."""
-    body = _body(locals(), exclude=("owner", "repo", "tag_protection_id"))
-    return _ok(
-        _get_client().patch(
-            f"/repos/{owner}/{repo}/tag_protections/{tag_protection_id}", json=body
-        )
-    )
+    return _call("PATCH", "/repos/{owner}/{repo}/tag_protections/{tag_protection_id}", locals())
 
 @_op(gitea_delete)
 def delete_tag_protection(owner: str, repo: str, tag_protection_id: int):
@@ -989,16 +907,7 @@ def create_commit_status(
     context: Optional[str] = None,
 ):
     """Create a commit status. State must be one of: pending, success, error, failure, warning."""
-    body: dict = {"state": state}
-    if target_url is not None:
-        body["target_url"] = target_url
-    if description is not None:
-        body["description"] = description
-    if context is not None:
-        body["context"] = context
-    return _ok(
-        _get_client().post(f"/repos/{owner}/{repo}/statuses/{sha}", json=body)
-    )
+    return _call("POST", "/repos/{owner}/{repo}/statuses/{sha}", locals())
 
 @_op(gitea_read)
 def get_combined_commit_status(owner: str, repo: str, ref: str):
@@ -1022,17 +931,12 @@ def create_tag(
     message: Optional[str] = None,
 ):
     """Create a new tag in a repository."""
-    body: dict = {"tag_name": tag_name}
-    if target is not None:
-        body["target"] = target
-    if message is not None:
-        body["message"] = message
-    return _ok(_get_client().post(f"/repos/{owner}/{repo}/tags", json=body))
+    return _call("POST", "/repos/{owner}/{repo}/tags", locals())
 
 @_op(gitea_delete)
 def delete_tag(owner: str, repo: str, tag: str):
     """Delete a tag from a repository."""
-    return _ok(_get_client().delete(f"/repos/{owner}/{repo}/tags/{tag}"))
+    return _call("DELETE", "/repos/{owner}/{repo}/tags/{tag}", locals())
 
 @_op(gitea_read)
 def list_releases(owner: str, repo: str, brief: bool = True):
@@ -1058,7 +962,7 @@ def list_releases(owner: str, repo: str, brief: bool = True):
 @_op(gitea_read)
 def get_release(owner: str, repo: str, release_id: int):
     """Get a release by ID."""
-    return _ok(_get_client().get(f"/repos/{owner}/{repo}/releases/{release_id}"))
+    return _call("GET", "/repos/{owner}/{repo}/releases/{release_id}", locals())
 
 @_op(gitea_create)
 def create_release(
@@ -1072,18 +976,7 @@ def create_release(
     prerelease: Optional[bool] = None,
 ):
     """Create a new release in a repository."""
-    payload: dict = {"tag_name": tag_name}
-    if target_commitish is not None:
-        payload["target_commitish"] = target_commitish
-    if name is not None:
-        payload["name"] = name
-    if body is not None:
-        payload["body"] = body
-    if draft is not None:
-        payload["draft"] = draft
-    if prerelease is not None:
-        payload["prerelease"] = prerelease
-    return _ok(_get_client().post(f"/repos/{owner}/{repo}/releases", json=payload))
+    return _call("POST", "/repos/{owner}/{repo}/releases", locals())
 
 @_op(gitea_update)
 def edit_release(
@@ -1098,29 +991,12 @@ def edit_release(
     prerelease: Optional[bool] = None,
 ):
     """Edit a release."""
-    payload: dict = {}
-    if tag_name is not None:
-        payload["tag_name"] = tag_name
-    if target_commitish is not None:
-        payload["target_commitish"] = target_commitish
-    if name is not None:
-        payload["name"] = name
-    if body is not None:
-        payload["body"] = body
-    if draft is not None:
-        payload["draft"] = draft
-    if prerelease is not None:
-        payload["prerelease"] = prerelease
-    return _ok(
-        _get_client().patch(
-            f"/repos/{owner}/{repo}/releases/{release_id}", json=payload
-        )
-    )
+    return _call("PATCH", "/repos/{owner}/{repo}/releases/{release_id}", locals())
 
 @_op(gitea_delete)
 def delete_release(owner: str, repo: str, release_id: int):
     """Delete a release by ID."""
-    return _ok(_get_client().delete(f"/repos/{owner}/{repo}/releases/{release_id}"))
+    return _call("DELETE", "/repos/{owner}/{repo}/releases/{release_id}", locals())
 
 # ── Labels ───────────────────────────────────────────────────────────────────
 
@@ -1139,10 +1015,7 @@ def create_repo_label(
     description: Optional[str] = None,
 ):
     """Create a label in a repository."""
-    body: dict = {"name": name, "color": color}
-    if description is not None:
-        body["description"] = description
-    return _ok(_get_client().post(f"/repos/{owner}/{repo}/labels", json=body))
+    return _call("POST", "/repos/{owner}/{repo}/labels", locals())
 
 @_op(gitea_update)
 def edit_repo_label(
@@ -1154,15 +1027,12 @@ def edit_repo_label(
     description: Optional[str] = None,
 ):
     """Edit a repository label."""
-    body = _body(locals(), exclude=("owner", "repo", "label_id"))
-    return _ok(
-        _get_client().patch(f"/repos/{owner}/{repo}/labels/{label_id}", json=body)
-    )
+    return _call("PATCH", "/repos/{owner}/{repo}/labels/{label_id}", locals())
 
 @_op(gitea_delete)
 def delete_repo_label(owner: str, repo: str, label_id: int):
     """Delete a repository label."""
-    return _ok(_get_client().delete(f"/repos/{owner}/{repo}/labels/{label_id}"))
+    return _call("DELETE", "/repos/{owner}/{repo}/labels/{label_id}", locals())
 
 # ── Milestones ───────────────────────────────────────────────────────────────
 
