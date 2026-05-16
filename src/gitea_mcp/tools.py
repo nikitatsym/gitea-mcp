@@ -6,7 +6,7 @@ from typing import Optional
 
 from .client import GiteaClient
 from .prepare import (
-    _ok, _validate_brief, _enforce_private, _enforce_visibility,
+    _ok, _body, _validate_brief, _enforce_private, _enforce_visibility,
     _slim_issues, _slim_repos, _slim_notifications, _slim_comments,
     _slim_commits, _slim_workflow_run, _slim_workflow_runs, _slim_job, _slim_jobs,
 )
@@ -166,13 +166,7 @@ def edit_oauth2_app(
     confidential_client: Optional[bool] = None,
 ):
     """Edit an OAuth2 application."""
-    body: dict = {}
-    if name is not None:
-        body["name"] = name
-    if redirect_uris is not None:
-        body["redirect_uris"] = redirect_uris
-    if confidential_client is not None:
-        body["confidential_client"] = confidential_client
+    body = _body(locals(), exclude=("app_id",))
     return _ok(
         _get_client().patch(f"/user/applications/oauth2/{app_id}", json=body)
     )
@@ -210,25 +204,7 @@ def update_user_settings(
     diff_view_style: Optional[str] = None,
 ):
     """Update the current user's settings."""
-    body: dict = {}
-    if description is not None:
-        body["description"] = description
-    if full_name is not None:
-        body["full_name"] = full_name
-    if location is not None:
-        body["location"] = location
-    if website is not None:
-        body["website"] = website
-    if language is not None:
-        body["language"] = language
-    if hide_email is not None:
-        body["hide_email"] = hide_email
-    if hide_activity is not None:
-        body["hide_activity"] = hide_activity
-    if theme is not None:
-        body["theme"] = theme
-    if diff_view_style is not None:
-        body["diff_view_style"] = diff_view_style
+    body = _body(locals())
     return _ok(_get_client().patch("/user/settings", json=body))
 
 # ── SSH / GPG Keys ──────────────────────────────────────────────────────────
@@ -348,30 +324,16 @@ def edit_repo(
     has_issues: Optional[bool] = None,
     has_wiki: Optional[bool] = None,
     has_pull_requests: Optional[bool] = None,
+    has_projects: Optional[bool] = None,
+    has_releases: Optional[bool] = None,
+    has_packages: Optional[bool] = None,
+    has_actions: Optional[bool] = None,
     default_branch: Optional[str] = None,
     archived: Optional[bool] = None,
 ):
     """Edit a repository's properties."""
     private = _enforce_private(private)
-    body: dict = {}
-    if name is not None:
-        body["name"] = name
-    if description is not None:
-        body["description"] = description
-    if website is not None:
-        body["website"] = website
-    if private is not None:
-        body["private"] = private
-    if has_issues is not None:
-        body["has_issues"] = has_issues
-    if has_wiki is not None:
-        body["has_wiki"] = has_wiki
-    if has_pull_requests is not None:
-        body["has_pull_requests"] = has_pull_requests
-    if default_branch is not None:
-        body["default_branch"] = default_branch
-    if archived is not None:
-        body["archived"] = archived
+    body = _body(locals(), exclude=("owner", "repo"))
     return _ok(_get_client().patch(f"/repos/{owner}/{repo}", json=body))
 
 @_op(gitea_delete)
@@ -387,11 +349,7 @@ def fork_repo(
     name: Optional[str] = None,
 ):
     """Fork a repository."""
-    body: dict = {}
-    if organization is not None:
-        body["organization"] = organization
-    if name is not None:
-        body["name"] = name
+    body = _body(locals(), exclude=("owner", "repo"))
     return _ok(_get_client().post(f"/repos/{owner}/{repo}/forks", json=body))
 
 @_op(gitea_read)
@@ -560,13 +518,7 @@ def edit_repo_webhook(
     active: Optional[bool] = None,
 ):
     """Edit a repository webhook."""
-    body: dict = {}
-    if config is not None:
-        body["config"] = config
-    if events is not None:
-        body["events"] = events
-    if active is not None:
-        body["active"] = active
+    body = _body(locals(), exclude=("owner", "repo", "hook_id"))
     return _ok(
         _get_client().patch(f"/repos/{owner}/{repo}/hooks/{hook_id}", json=body)
     )
@@ -615,13 +567,7 @@ def edit_org_webhook(
     active: Optional[bool] = None,
 ):
     """Edit an organization webhook."""
-    body: dict = {}
-    if config is not None:
-        body["config"] = config
-    if events is not None:
-        body["events"] = events
-    if active is not None:
-        body["active"] = active
+    body = _body(locals(), exclude=("org", "hook_id"))
     return _ok(_get_client().patch(f"/orgs/{org}/hooks/{hook_id}", json=body))
 
 @_op(gitea_delete)
@@ -670,9 +616,7 @@ def get_file_content(
     ref: Optional[str] = None,
 ):
     """Get the metadata and content of a file in a repository."""
-    params: dict = {}
-    if ref is not None:
-        params["ref"] = ref
+    params = _body(locals(), exclude=("owner", "repo", "filepath"))
     return _ok(
         _get_client().get(
             f"/repos/{owner}/{repo}/contents/{filepath}", params=params or None
@@ -758,9 +702,7 @@ def get_directory_content(
     ref: Optional[str] = None,
 ):
     """Get the contents of a directory in a repository."""
-    params: dict = {}
-    if ref is not None:
-        params["ref"] = ref
+    params = _body(locals(), exclude=("owner", "repo", "dirpath"))
     return _ok(
         _get_client().get(
             f"/repos/{owner}/{repo}/contents/{dirpath}", params=params or None
@@ -775,9 +717,7 @@ def get_raw_file(
     ref: Optional[str] = None,
 ):
     """Get the raw content of a file in a repository."""
-    params: dict = {}
-    if ref is not None:
-        params["ref"] = ref
+    params = _body(locals(), exclude=("owner", "repo", "filepath"))
     return _get_client().get_text(
         f"/repos/{owner}/{repo}/raw/{filepath}", params=params or None
     )
@@ -879,23 +819,7 @@ def edit_branch_protection(
     status_check_contexts: Optional[list[str]] = None,
 ):
     """Edit a branch protection rule."""
-    body: dict = {}
-    if enable_push is not None:
-        body["enable_push"] = enable_push
-    if enable_push_whitelist is not None:
-        body["enable_push_whitelist"] = enable_push_whitelist
-    if push_whitelist_usernames is not None:
-        body["push_whitelist_usernames"] = push_whitelist_usernames
-    if enable_merge_whitelist is not None:
-        body["enable_merge_whitelist"] = enable_merge_whitelist
-    if merge_whitelist_usernames is not None:
-        body["merge_whitelist_usernames"] = merge_whitelist_usernames
-    if required_approvals is not None:
-        body["required_approvals"] = required_approvals
-    if enable_status_check is not None:
-        body["enable_status_check"] = enable_status_check
-    if status_check_contexts is not None:
-        body["status_check_contexts"] = status_check_contexts
+    body = _body(locals(), exclude=("owner", "repo", "name"))
     return _ok(
         _get_client().patch(
             f"/repos/{owner}/{repo}/branch_protections/{name}", json=body
@@ -954,13 +878,7 @@ def edit_tag_protection(
     whitelist_teams: Optional[list[str]] = None,
 ):
     """Edit a tag protection rule."""
-    body: dict = {}
-    if name_pattern is not None:
-        body["name_pattern"] = name_pattern
-    if whitelist_usernames is not None:
-        body["whitelist_usernames"] = whitelist_usernames
-    if whitelist_teams is not None:
-        body["whitelist_teams"] = whitelist_teams
+    body = _body(locals(), exclude=("owner", "repo", "tag_protection_id"))
     return _ok(
         _get_client().patch(
             f"/repos/{owner}/{repo}/tag_protections/{tag_protection_id}", json=body
@@ -1204,13 +1122,7 @@ def edit_repo_label(
     description: Optional[str] = None,
 ):
     """Edit a repository label."""
-    body: dict = {}
-    if name is not None:
-        body["name"] = name
-    if color is not None:
-        body["color"] = color
-    if description is not None:
-        body["description"] = description
+    body = _body(locals(), exclude=("owner", "repo", "label_id"))
     return _ok(
         _get_client().patch(f"/repos/{owner}/{repo}/labels/{label_id}", json=body)
     )
@@ -1230,9 +1142,7 @@ def list_milestones(
     state: Optional[str] = None,
 ):
     """List a repository's milestones. State can be open, closed, or all."""
-    params: dict = {}
-    if state is not None:
-        params["state"] = state
+    params = _body(locals(), exclude=("owner", "repo"))
     return _ok(
         _get_client().paginate(f"/repos/{owner}/{repo}/milestones", params=params or None)
     )
@@ -1274,15 +1184,7 @@ def edit_milestone(
     state: Optional[str] = None,
 ):
     """Edit a milestone."""
-    body: dict = {}
-    if title is not None:
-        body["title"] = title
-    if description is not None:
-        body["description"] = description
-    if due_on is not None:
-        body["due_on"] = due_on
-    if state is not None:
-        body["state"] = state
+    body = _body(locals(), exclude=("owner", "repo", "milestone_id"))
     return _ok(
         _get_client().patch(
             f"/repos/{owner}/{repo}/milestones/{milestone_id}", json=body
@@ -1550,11 +1452,7 @@ def list_repo_issue_comments(
 
     brief (default True): compact view — id, user login, body, timestamps.
     Set brief=False for full objects."""
-    params: dict = {}
-    if since is not None:
-        params["since"] = since
-    if before is not None:
-        params["before"] = before
+    params = _body(locals(), exclude=("owner", "repo", "brief"))
     data = _get_client().paginate(
         f"/repos/{owner}/{repo}/issues/comments", params=params or None
     )
@@ -1786,13 +1684,7 @@ def list_pull_requests(
     If brief is null for a PR, use get_pull_request for full details or
     edit the PR body to add <brief>short summary</brief> for convenient list views.
     Set brief=False for full Gitea API response objects."""
-    params: dict = {}
-    if state is not None:
-        params["state"] = state
-    if sort is not None:
-        params["sort"] = sort
-    if milestone is not None:
-        params["milestone"] = milestone
+    params = _body(locals(), exclude=("owner", "repo", "brief", "labels"))
     if labels is not None:
         params["labels"] = ",".join(str(l) for l in labels)
     data = _get_client().paginate(f"/repos/{owner}/{repo}/pulls", params=params or None)
@@ -1908,9 +1800,7 @@ def update_pull_request_branch(
     style: Optional[str] = None,
 ):
     """Update a pull request branch. Style can be 'merge' or 'rebase'."""
-    body: dict = {}
-    if style is not None:
-        body["style"] = style
+    body = _body(locals(), exclude=("owner", "repo", "index"))
     return _ok(
         _get_client().post(
             f"/repos/{owner}/{repo}/pulls/{index}/update", json=body
@@ -1990,9 +1880,7 @@ def dismiss_pull_review(
     message: Optional[str] = None,
 ):
     """Dismiss a pull request review."""
-    body: dict = {}
-    if message is not None:
-        body["message"] = message
+    body = _body(locals(), exclude=("owner", "repo", "index", "review_id"))
     return _ok(
         _get_client().post(
             f"/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}/dismissals",
@@ -2209,15 +2097,7 @@ def edit_org(
 ):
     """Edit an organization's properties."""
     visibility = _enforce_visibility(visibility)
-    body: dict = {}
-    if full_name is not None:
-        body["full_name"] = full_name
-    if description is not None:
-        body["description"] = description
-    if website is not None:
-        body["website"] = website
-    if visibility is not None:
-        body["visibility"] = visibility
+    body = _body(locals(), exclude=("org",))
     return _ok(_get_client().patch(f"/orgs/{org}", json=body))
 
 @_op(gitea_delete)
@@ -2346,15 +2226,7 @@ def edit_team(
     units: Optional[list[str]] = None,
 ):
     """Edit a team's properties."""
-    body: dict = {}
-    if name is not None:
-        body["name"] = name
-    if description is not None:
-        body["description"] = description
-    if permission is not None:
-        body["permission"] = permission
-    if units is not None:
-        body["units"] = units
+    body = _body(locals(), exclude=("team_id",))
     return _ok(_get_client().patch(f"/teams/{team_id}", json=body))
 
 @_op(gitea_delete)
@@ -2427,13 +2299,7 @@ def edit_org_label(
     description: Optional[str] = None,
 ):
     """Edit an organization label."""
-    body: dict = {}
-    if name is not None:
-        body["name"] = name
-    if color is not None:
-        body["color"] = color
-    if description is not None:
-        body["description"] = description
+    body = _body(locals(), exclude=("org", "label_id"))
     return _ok(_get_client().patch(f"/orgs/{org}/labels/{label_id}", json=body))
 
 @_op(gitea_delete)
@@ -2455,13 +2321,11 @@ def list_notifications(
 
     brief (default True): compact view — id, repo, subject type/title, unread,
     updated_at. Set brief=False for full objects."""
-    params: dict = {}
-    if all is not None:
-        params["all"] = all
-    if status_types is not None:
-        params["status-types"] = status_types
-    if subject_type is not None:
-        params["subject-type"] = subject_type
+    params = _body(
+        locals(),
+        exclude=("brief",),
+        rename={"status_types": "status-types", "subject_type": "subject-type"},
+    )
     data = _get_client().paginate("/notifications", params=params or None)
     if brief:
         data = _slim_notifications(data)
@@ -2470,9 +2334,7 @@ def list_notifications(
 @_op(gitea_update)
 def mark_notifications_read(last_read_at: Optional[str] = None):
     """Mark all notifications as read."""
-    body: dict = {}
-    if last_read_at is not None:
-        body["last_read_at"] = last_read_at
+    body = _body(locals())
     return _ok(_get_client().put("/notifications", json=body))
 
 @_op(gitea_read)
@@ -2496,11 +2358,11 @@ def list_repo_notifications(
     """List notifications for a repository.
 
     brief (default True): compact view. Set brief=False for full objects."""
-    params: dict = {}
-    if all is not None:
-        params["all"] = all
-    if status_types is not None:
-        params["status-types"] = status_types
+    params = _body(
+        locals(),
+        exclude=("owner", "repo", "brief"),
+        rename={"status_types": "status-types"},
+    )
     data = _get_client().paginate(
         f"/repos/{owner}/{repo}/notifications", params=params or None
     )
@@ -2515,9 +2377,7 @@ def mark_repo_notifications_read(
     last_read_at: Optional[str] = None,
 ):
     """Mark all notifications in a repository as read."""
-    body: dict = {}
-    if last_read_at is not None:
-        body["last_read_at"] = last_read_at
+    body = _body(locals(), exclude=("owner", "repo"))
     return _ok(
         _get_client().put(
             f"/repos/{owner}/{repo}/notifications", json=body
@@ -2569,13 +2429,9 @@ def edit_wiki_page(
     message: Optional[str] = None,
 ):
     """Edit a wiki page. Content is provided as plain text and will be base64-encoded automatically."""
-    body: dict = {}
-    if title is not None:
-        body["title"] = title
+    body = _body(locals(), exclude=("owner", "repo", "page_name", "content"))
     if content is not None:
         body["content_base64"] = base64.b64encode(content.encode()).decode()
-    if message is not None:
-        body["message"] = message
     return _ok(
         _get_client().patch(
             f"/repos/{owner}/{repo}/wiki/page/{page_name}", json=body
@@ -2598,9 +2454,7 @@ def list_packages(
     type: Optional[str] = None,
 ):
     """List packages for an owner. Type can filter by package type."""
-    params: dict = {}
-    if type is not None:
-        params["type"] = type
+    params = _body(locals(), exclude=("owner",))
     return _ok(
         _get_client().paginate(f"/packages/{owner}", params=params or None)
     )
@@ -2671,25 +2525,7 @@ def admin_edit_user(
     prohibit_login: Optional[bool] = None,
 ):
     """Edit a user's properties (admin only)."""
-    body: dict = {}
-    if email is not None:
-        body["email"] = email
-    if password is not None:
-        body["password"] = password
-    if must_change_password is not None:
-        body["must_change_password"] = must_change_password
-    if login_name is not None:
-        body["login_name"] = login_name
-    if active is not None:
-        body["active"] = active
-    if admin is not None:
-        body["admin"] = admin
-    if allow_git_hook is not None:
-        body["allow_git_hook"] = allow_git_hook
-    if max_repo_creation is not None:
-        body["max_repo_creation"] = max_repo_creation
-    if prohibit_login is not None:
-        body["prohibit_login"] = prohibit_login
+    body = _body(locals(), exclude=("username",))
     return _ok(_get_client().patch(f"/admin/users/{username}", json=body))
 
 @_op(gitea_admin_write)
@@ -2721,11 +2557,7 @@ def admin_list_repos(
     page: Optional[int] = None,
 ):
     """List all repositories (admin only)."""
-    params: dict = {}
-    if limit is not None:
-        params["limit"] = limit
-    if page is not None:
-        params["page"] = page
+    params = _body(locals())
     return _ok(_get_client().paginate("/admin/repos", params=params or None))
 
 @_op(gitea_admin_write)
@@ -2815,11 +2647,7 @@ def admin_list_emails(
     page: Optional[int] = None,
 ):
     """List all emails (admin only)."""
-    params: dict = {}
-    if limit is not None:
-        params["limit"] = limit
-    if page is not None:
-        params["page"] = page
+    params = _body(locals())
     return _ok(_get_client().paginate("/admin/emails", params=params or None))
 
 @_op(gitea_admin_read)
@@ -3101,11 +2929,7 @@ def list_repo_activities(
     limit: Optional[int] = None,
 ):
     """List activity feeds for a repository."""
-    params: dict = {}
-    if page is not None:
-        params["page"] = page
-    if limit is not None:
-        params["limit"] = limit
+    params = _body(locals(), exclude=("owner", "repo"))
     return _ok(
         _get_client().paginate(
             f"/repos/{owner}/{repo}/activities/feeds", params=params or None
@@ -3138,9 +2962,7 @@ def get_git_tree(
     recursive: Optional[bool] = None,
 ):
     """Get the tree for a commit SHA."""
-    params: dict = {}
-    if recursive is not None:
-        params["recursive"] = recursive
+    params = _body(locals(), exclude=("owner", "repo", "sha"))
     return _ok(
         _get_client().get(
             f"/repos/{owner}/{repo}/git/trees/{sha}", params=params or None
