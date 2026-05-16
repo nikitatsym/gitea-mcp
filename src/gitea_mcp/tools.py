@@ -22,6 +22,48 @@ def _get_client() -> GiteaClient:
     return _client
 
 
+_PATH_PLACEHOLDER = re.compile(r"\{(\w+)\}")
+
+
+def _call(
+    method: str,
+    path: str,
+    kw: dict,
+    *,
+    rename: dict | None = None,
+    exclude=(),
+):
+    """Make a Gitea API call, deriving path-params and body/query from `kw`.
+
+    Placeholders in `path` (e.g. `/repos/{owner}/{repo}`) are interpolated
+    from `kw` and automatically excluded from the request body/query.
+    Remaining non-None entries in `kw` become JSON body for write methods
+    (POST/PUT/PATCH) or query params for GET/DELETE.
+
+    `rename` maps Python names to API field names (e.g. snake→kebab).
+    `exclude` drops internal helper args (e.g. `brief`) not meant for the
+    wire. Use this for the simple one-call pattern; for paginated, slimmed,
+    text, or transformation-heavy endpoints, call the client directly.
+    """
+    placeholders = _PATH_PLACEHOLDER.findall(path)
+    excl = set(placeholders) | set(exclude)
+    formatted = path.format(**{k: kw[k] for k in placeholders})
+    payload = _body(kw, exclude=excl, rename=rename)
+    client = _get_client()
+    method = method.upper()
+    if method == "GET":
+        return _ok(client.get(formatted, params=payload or None))
+    if method == "DELETE":
+        return _ok(client.delete(formatted, params=payload or None))
+    if method == "POST":
+        return _ok(client.post(formatted, json=payload))
+    if method == "PUT":
+        return _ok(client.put(formatted, json=payload))
+    if method == "PATCH":
+        return _ok(client.patch(formatted, json=payload))
+    raise ValueError(f"Unsupported HTTP method {method!r}")
+
+
 # ── Groups ────────────────────────────────────────────────────────────────────
 
 gitea_read = Group("gitea_read", "Gitea read operations (GET). operation=\"help\" to list.")
@@ -148,9 +190,7 @@ def create_oauth2_app(
     confidential_client: Optional[bool] = None,
 ):
     """Create an OAuth2 application for the current user."""
-    body: dict = {"name": name, "redirect_uris": redirect_uris}
-    if confidential_client is not None:
-        body["confidential_client"] = confidential_client
+    body = _body(locals())
     return _ok(_get_client().post("/user/applications/oauth2", json=body))
 
 @_op(gitea_read)
@@ -262,15 +302,7 @@ def search_repos(
     brief (default True): compact view — full_name, description, language,
     stars, issues count, default_branch, updated_at.
     Set brief=False for full Gitea API response objects."""
-    params: dict = {"q": query, "limit": limit}
-    if topic is not None:
-        params["topic"] = topic
-    if sort is not None:
-        params["sort"] = sort
-    if order is not None:
-        params["order"] = order
-    if page is not None:
-        params["page"] = page
+    params = _body(locals(), exclude=("brief",), rename={"query": "q"})
     data = _get_client().get("/repos/search", params=params)
     if isinstance(data, dict) and "ok" in data and "data" in data:
         data = data["data"]
