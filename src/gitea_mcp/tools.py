@@ -1052,9 +1052,7 @@ def list_milestones(
 @_op(gitea_read)
 def get_milestone(owner: str, repo: str, milestone_id: int):
     """Get a milestone by ID."""
-    return _ok(
-        _get_client().get(f"/repos/{owner}/{repo}/milestones/{milestone_id}")
-    )
+    return _call("GET", "/repos/{owner}/{repo}/milestones/{milestone_id}", locals())
 
 @_op(gitea_create)
 def create_milestone(
@@ -1066,14 +1064,7 @@ def create_milestone(
     state: Optional[str] = None,
 ):
     """Create a milestone in a repository."""
-    body: dict = {"title": title}
-    if description is not None:
-        body["description"] = description
-    if due_on is not None:
-        body["due_on"] = due_on
-    if state is not None:
-        body["state"] = state
-    return _ok(_get_client().post(f"/repos/{owner}/{repo}/milestones", json=body))
+    return _call("POST", "/repos/{owner}/{repo}/milestones", locals())
 
 @_op(gitea_update)
 def edit_milestone(
@@ -1086,19 +1077,12 @@ def edit_milestone(
     state: Optional[str] = None,
 ):
     """Edit a milestone."""
-    body = _body(locals(), exclude=("owner", "repo", "milestone_id"))
-    return _ok(
-        _get_client().patch(
-            f"/repos/{owner}/{repo}/milestones/{milestone_id}", json=body
-        )
-    )
+    return _call("PATCH", "/repos/{owner}/{repo}/milestones/{milestone_id}", locals())
 
 @_op(gitea_delete)
 def delete_milestone(owner: str, repo: str, milestone_id: int):
     """Delete a milestone."""
-    return _ok(
-        _get_client().delete(f"/repos/{owner}/{repo}/milestones/{milestone_id}")
-    )
+    return _call("DELETE", "/repos/{owner}/{repo}/milestones/{milestone_id}", locals())
 
 # ── Issues ───────────────────────────────────────────────────────────────────
 
@@ -1181,7 +1165,7 @@ def search_issues(
 @_op(gitea_read)
 def get_issue(owner: str, repo: str, index: int):
     """Get an issue by its index number."""
-    return _ok(_get_client().get(f"/repos/{owner}/{repo}/issues/{index}"))
+    return _call("GET", "/repos/{owner}/{repo}/issues/{index}", locals())
 
 @_op(gitea_create)
 def create_issue(
@@ -1195,16 +1179,7 @@ def create_issue(
 ):
     """Create an issue in a repository. Body must include <brief>summary</brief> tag."""
     _validate_brief(body)
-    payload: dict = {"title": title}
-    if body is not None:
-        payload["body"] = body
-    if assignees is not None:
-        payload["assignees"] = assignees
-    if milestone_id is not None:
-        payload["milestone"] = milestone_id
-    if labels is not None:
-        payload["labels"] = labels
-    return _ok(_get_client().post(f"/repos/{owner}/{repo}/issues", json=payload))
+    return _call("POST", "/repos/{owner}/{repo}/issues", locals(), rename={"milestone_id": "milestone"})
 
 @_op(gitea_update)
 def edit_issue(
@@ -1222,24 +1197,7 @@ def edit_issue(
     """Edit an issue. State can be 'open' or 'closed'. Body must include <brief>summary</brief> tag."""
     if body is not None:
         _validate_brief(body)
-    payload: dict = {}
-    if title is not None:
-        payload["title"] = title
-    if body is not None:
-        payload["body"] = body
-    if state is not None:
-        payload["state"] = state
-    if assignees is not None:
-        payload["assignees"] = assignees
-    if milestone is not None:
-        payload["milestone"] = milestone
-    if labels is not None:
-        payload["labels"] = labels
-    if due_date is not None:
-        payload["due_date"] = due_date
-    return _ok(
-        _get_client().patch(f"/repos/{owner}/{repo}/issues/{index}", json=payload)
-    )
+    return _call("PATCH", "/repos/{owner}/{repo}/issues/{index}", locals())
 
 @_op(gitea_read)
 def list_issue_comments(owner: str, repo: str, index: int, brief: bool = True):
@@ -1273,14 +1231,12 @@ def edit_issue_comment(owner: str, repo: str, comment_id: int, body: str):
 @_op(gitea_delete)
 def delete_issue_comment(owner: str, repo: str, comment_id: int):
     """Delete a comment on an issue."""
-    return _ok(
-        _get_client().delete(f"/repos/{owner}/{repo}/issues/comments/{comment_id}")
-    )
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/comments/{comment_id}", locals())
 
 @_op(gitea_read)
 def list_issue_labels(owner: str, repo: str, index: int):
     """List labels on an issue."""
-    return _ok(_get_client().get(f"/repos/{owner}/{repo}/issues/{index}/labels"))
+    return _call("GET", "/repos/{owner}/{repo}/issues/{index}/labels", locals())
 
 @_op(gitea_create)
 def add_issue_labels(owner: str, repo: str, index: int, labels: list[int]):
@@ -1294,11 +1250,7 @@ def add_issue_labels(owner: str, repo: str, index: int, labels: list[int]):
 @_op(gitea_delete)
 def remove_issue_label(owner: str, repo: str, index: int, label_id: int):
     """Remove a label from an issue."""
-    return _ok(
-        _get_client().delete(
-            f"/repos/{owner}/{repo}/issues/{index}/labels/{label_id}"
-        )
-    )
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/labels/{label_id}", locals())
 
 @_op(gitea_update)
 def replace_issue_labels(
@@ -1324,16 +1276,12 @@ def set_issue_deadline(owner: str, repo: str, index: int, due_date: str):
 @_op(gitea_delete)
 def delete_issue_deadline(owner: str, repo: str, index: int):
     """Remove a deadline from an issue."""
-    return _ok(
-        _get_client().delete(f"/repos/{owner}/{repo}/issues/{index}/deadline")
-    )
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/deadline", locals())
 
 @_op(gitea_delete)
 def clear_issue_labels(owner: str, repo: str, index: int):
     """Remove all labels from an issue."""
-    return _ok(
-        _get_client().delete(f"/repos/{owner}/{repo}/issues/{index}/labels")
-    )
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/labels", locals())
 
 @_op(gitea_read)
 def get_issue_timeline(owner: str, repo: str, index: int):
@@ -1365,11 +1313,7 @@ def list_repo_issue_comments(
 @_op(gitea_delete)
 def delete_stopwatch(owner: str, repo: str, index: int):
     """Delete a stopwatch on an issue."""
-    return _ok(
-        _get_client().delete(
-            f"/repos/{owner}/{repo}/issues/{index}/stopwatch/delete"
-        )
-    )
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/stopwatch/delete", locals())
 
 # ── Issue Extended ───────────────────────────────────────────────────────────
 
@@ -1377,19 +1321,14 @@ def delete_stopwatch(owner: str, repo: str, index: int):
 @_op(gitea_read)
 def list_issue_dependencies(owner: str, repo: str, index: int):
     """List an issue's dependencies."""
-    return _ok(_get_client().get(f"/repos/{owner}/{repo}/issues/{index}/dependencies"))
+    return _call("GET", "/repos/{owner}/{repo}/issues/{index}/dependencies", locals())
 
 @_op(gitea_create)
 def add_issue_dependency(
     owner: str, repo: str, index: int, depends_on_id: int
 ):
     """Add a dependency to an issue. depends_on_id is the index of the dependency issue."""
-    return _ok(
-        _get_client().post(
-            f"/repos/{owner}/{repo}/issues/{index}/dependencies",
-            json={"id": depends_on_id},
-        )
-    )
+    return _call("POST", "/repos/{owner}/{repo}/issues/{index}/dependencies", locals(), rename={"depends_on_id": "id"})
 
 @_op(gitea_delete)
 def remove_issue_dependency(
@@ -1412,7 +1351,7 @@ def pin_issue(owner: str, repo: str, index: int):
 @_op(gitea_delete)
 def unpin_issue(owner: str, repo: str, index: int):
     """Unpin an issue in a repository."""
-    return _ok(_get_client().delete(f"/repos/{owner}/{repo}/issues/{index}/pin"))
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/pin", locals())
 
 @_op(gitea_update)
 def lock_issue(owner: str, repo: str, index: int):
@@ -1422,14 +1361,12 @@ def lock_issue(owner: str, repo: str, index: int):
 @_op(gitea_delete)
 def unlock_issue(owner: str, repo: str, index: int):
     """Unlock an issue's conversation."""
-    return _ok(_get_client().delete(f"/repos/{owner}/{repo}/issues/{index}/lock"))
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/lock", locals())
 
 @_op(gitea_read)
 def list_issue_subscriptions(owner: str, repo: str, index: int):
     """List users subscribed to an issue."""
-    return _ok(
-        _get_client().get(f"/repos/{owner}/{repo}/issues/{index}/subscriptions")
-    )
+    return _call("GET", "/repos/{owner}/{repo}/issues/{index}/subscriptions", locals())
 
 @_op(gitea_update)
 def subscribe_to_issue(owner: str, repo: str, index: int, user: str):
@@ -1443,11 +1380,7 @@ def subscribe_to_issue(owner: str, repo: str, index: int, user: str):
 @_op(gitea_delete)
 def unsubscribe_from_issue(owner: str, repo: str, index: int, user: str):
     """Unsubscribe a user from an issue."""
-    return _ok(
-        _get_client().delete(
-            f"/repos/{owner}/{repo}/issues/{index}/subscriptions/{user}"
-        )
-    )
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/subscriptions/{user}", locals())
 
 # ── Reactions ────────────────────────────────────────────────────────────────
 
@@ -1455,17 +1388,12 @@ def unsubscribe_from_issue(owner: str, repo: str, index: int, user: str):
 @_op(gitea_read)
 def list_issue_reactions(owner: str, repo: str, index: int):
     """List reactions on an issue."""
-    return _ok(_get_client().get(f"/repos/{owner}/{repo}/issues/{index}/reactions"))
+    return _call("GET", "/repos/{owner}/{repo}/issues/{index}/reactions", locals())
 
 @_op(gitea_create)
 def add_issue_reaction(owner: str, repo: str, index: int, reaction: str):
     """Add a reaction to an issue. Reaction can be: +1, -1, laugh, confused, heart, hooray, rocket, eyes."""
-    return _ok(
-        _get_client().post(
-            f"/repos/{owner}/{repo}/issues/{index}/reactions",
-            json={"content": reaction},
-        )
-    )
+    return _call("POST", "/repos/{owner}/{repo}/issues/{index}/reactions", locals(), rename={"reaction": "content"})
 
 @_op(gitea_delete)
 def remove_issue_reaction(owner: str, repo: str, index: int, reaction: str):
@@ -1481,23 +1409,14 @@ def remove_issue_reaction(owner: str, repo: str, index: int, reaction: str):
 @_op(gitea_read)
 def list_comment_reactions(owner: str, repo: str, comment_id: int):
     """List reactions on a comment."""
-    return _ok(
-        _get_client().get(
-            f"/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions"
-        )
-    )
+    return _call("GET", "/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions", locals())
 
 @_op(gitea_create)
 def add_comment_reaction(
     owner: str, repo: str, comment_id: int, reaction: str
 ):
     """Add a reaction to a comment. Reaction can be: +1, -1, laugh, confused, heart, hooray, rocket, eyes."""
-    return _ok(
-        _get_client().post(
-            f"/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions",
-            json={"content": reaction},
-        )
-    )
+    return _call("POST", "/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions", locals(), rename={"reaction": "content"})
 
 @_op(gitea_delete)
 def remove_comment_reaction(
@@ -1532,25 +1451,12 @@ def add_tracked_time(
     created: Optional[str] = None,
 ):
     """Add tracked time to an issue. Time is in seconds."""
-    body: dict = {"time": time}
-    if user_name is not None:
-        body["user_name"] = user_name
-    if created is not None:
-        body["created"] = created
-    return _ok(
-        _get_client().post(
-            f"/repos/{owner}/{repo}/issues/{index}/times", json=body
-        )
-    )
+    return _call("POST", "/repos/{owner}/{repo}/issues/{index}/times", locals())
 
 @_op(gitea_delete)
 def delete_tracked_time(owner: str, repo: str, index: int, time_id: int):
     """Delete a tracked time entry from an issue."""
-    return _ok(
-        _get_client().delete(
-            f"/repos/{owner}/{repo}/issues/{index}/times/{time_id}"
-        )
-    )
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/times/{time_id}", locals())
 
 @_op(gitea_create)
 def start_stopwatch(owner: str, repo: str, index: int):
@@ -1597,7 +1503,7 @@ def list_pull_requests(
 @_op(gitea_read)
 def get_pull_request(owner: str, repo: str, index: int):
     """Get a pull request by index."""
-    return _ok(_get_client().get(f"/repos/{owner}/{repo}/pulls/{index}"))
+    return _call("GET", "/repos/{owner}/{repo}/pulls/{index}", locals())
 
 @_op(gitea_create)
 def create_pull_request(
@@ -1612,16 +1518,7 @@ def create_pull_request(
     labels: Optional[list[int]] = None,
 ):
     """Create a pull request."""
-    payload: dict = {"title": title, "head": head, "base": base}
-    if body is not None:
-        payload["body"] = body
-    if assignees is not None:
-        payload["assignees"] = assignees
-    if milestone_id is not None:
-        payload["milestone"] = milestone_id
-    if labels is not None:
-        payload["labels"] = labels
-    return _ok(_get_client().post(f"/repos/{owner}/{repo}/pulls", json=payload))
+    return _call("POST", "/repos/{owner}/{repo}/pulls", locals(), rename={"milestone_id": "milestone"})
 
 @_op(gitea_update)
 def edit_pull_request(
@@ -1637,24 +1534,7 @@ def edit_pull_request(
     labels: Optional[list[int]] = None,
 ):
     """Edit a pull request."""
-    payload: dict = {}
-    if title is not None:
-        payload["title"] = title
-    if body is not None:
-        payload["body"] = body
-    if state is not None:
-        payload["state"] = state
-    if base is not None:
-        payload["base"] = base
-    if assignees is not None:
-        payload["assignees"] = assignees
-    if milestone is not None:
-        payload["milestone"] = milestone
-    if labels is not None:
-        payload["labels"] = labels
-    return _ok(
-        _get_client().patch(f"/repos/{owner}/{repo}/pulls/{index}", json=payload)
-    )
+    return _call("PATCH", "/repos/{owner}/{repo}/pulls/{index}", locals())
 
 @_op(gitea_create)
 def merge_pull_request(
@@ -1666,14 +1546,7 @@ def merge_pull_request(
     delete_branch_after_merge: Optional[bool] = None,
 ):
     """Merge a pull request. merge_type can be: merge, rebase, rebase-merge, squash, fast-forward-only."""
-    body: dict = {"Do": merge_type}
-    if merge_message is not None:
-        body["merge_message_field"] = merge_message
-    if delete_branch_after_merge is not None:
-        body["delete_branch_after_merge"] = delete_branch_after_merge
-    return _ok(
-        _get_client().post(f"/repos/{owner}/{repo}/pulls/{index}/merge", json=body)
-    )
+    return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/merge", locals(), rename={"merge_type": "Do", "merge_message": "merge_message_field"})
 
 @_op(gitea_read)
 def get_pull_request_diff(owner: str, repo: str, index: int):
@@ -1702,12 +1575,7 @@ def update_pull_request_branch(
     style: Optional[str] = None,
 ):
     """Update a pull request branch. Style can be 'merge' or 'rebase'."""
-    body = _body(locals(), exclude=("owner", "repo", "index"))
-    return _ok(
-        _get_client().post(
-            f"/repos/{owner}/{repo}/pulls/{index}/update", json=body
-        )
-    )
+    return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/update", locals())
 
 @_op(gitea_read)
 def list_pull_reviews(owner: str, repo: str, index: int):
@@ -1726,18 +1594,7 @@ def create_pull_review(
     comments: Optional[list[dict]] = None,
 ):
     """Create a review on a pull request. Event can be: APPROVED, REQUEST_CHANGES, COMMENT, PENDING."""
-    payload: dict = {}
-    if body is not None:
-        payload["body"] = body
-    if event is not None:
-        payload["event"] = event
-    if comments is not None:
-        payload["comments"] = comments
-    return _ok(
-        _get_client().post(
-            f"/repos/{owner}/{repo}/pulls/{index}/reviews", json=payload
-        )
-    )
+    return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/reviews", locals())
 
 @_op(gitea_create)
 def submit_pull_review(
@@ -1749,17 +1606,7 @@ def submit_pull_review(
     event: Optional[str] = None,
 ):
     """Submit a pending pull request review."""
-    payload: dict = {}
-    if body is not None:
-        payload["body"] = body
-    if event is not None:
-        payload["event"] = event
-    return _ok(
-        _get_client().post(
-            f"/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}",
-            json=payload,
-        )
-    )
+    return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}", locals())
 
 @_op(gitea_create)
 def request_pull_reviewers(
@@ -1782,13 +1629,7 @@ def dismiss_pull_review(
     message: Optional[str] = None,
 ):
     """Dismiss a pull request review."""
-    body = _body(locals(), exclude=("owner", "repo", "index", "review_id"))
-    return _ok(
-        _get_client().post(
-            f"/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}/dismissals",
-            json=body,
-        )
-    )
+    return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}/dismissals", locals())
 
 # ── Actions / CI ─────────────────────────────────────────────────────────────
 
