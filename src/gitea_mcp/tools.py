@@ -274,9 +274,10 @@ def create_user_access_token(
 ):
     """Create a personal access token for a user.
 
-    Requires HTTP Basic auth (Gitea's /users/{u}/tokens endpoint refuses
-    token auth). `username`/`password` fall back to `GITEA_BASIC_USER` /
-    `GITEA_BASIC_PASS` env vars if omitted.
+    Requires HTTP Basic auth. The password field can be the user's real
+    password OR an existing PAT with `write:user` (or `all`) scope —
+    Gitea's Basic.Verify tries the PAT path first. `username`/`password`
+    fall back to `GITEA_BASIC_USER` / `GITEA_BASIC_PASS` env vars if omitted.
 
     The response's `sha1` field is the raw token — Gitea will not show it again.
     Common scopes: 'write:package', 'read:package', 'write:repository', 'all'.
