@@ -1819,16 +1819,7 @@ def create_org(
 ):
     """Create an organization."""
     visibility = _enforce_visibility(visibility)
-    body: dict = {"username": username}
-    if full_name is not None:
-        body["full_name"] = full_name
-    if description is not None:
-        body["description"] = description
-    if website is not None:
-        body["website"] = website
-    if visibility is not None:
-        body["visibility"] = visibility
-    return _ok(_get_client().post("/orgs", json=body))
+    return _call("POST", "/orgs", locals())
 
 @_op(gitea_update)
 def edit_org(
@@ -1840,8 +1831,7 @@ def edit_org(
 ):
     """Edit an organization's properties."""
     visibility = _enforce_visibility(visibility)
-    body = _body(locals(), exclude=("org",))
-    return _ok(_get_client().patch(f"/orgs/{org}", json=body))
+    return _call("PATCH", "/orgs/{org}", locals())
 
 @_op(gitea_delete)
 def delete_org(org: str):
@@ -1907,22 +1897,7 @@ def create_org_repo(
 ):
     """Create a repository in an organization."""
     private = _enforce_private(private)
-    body: dict = {"name": name}
-    if description is not None:
-        body["description"] = description
-    if private is not None:
-        body["private"] = private
-    if auto_init is not None:
-        body["auto_init"] = auto_init
-    if gitignores is not None:
-        body["gitignores"] = gitignores
-    if license is not None:
-        body["license"] = license
-    if readme is not None:
-        body["readme"] = readme
-    if default_branch is not None:
-        body["default_branch"] = default_branch
-    return _ok(_get_client().post(f"/orgs/{org}/repos", json=body))
+    return _call("POST", "/orgs/{org}/repos", locals())
 
 @_op(gitea_read)
 def list_user_orgs(username: str):
@@ -1951,14 +1926,7 @@ def create_team(
     description: Optional[str] = None,
 ):
     """Create a team in an organization. Permission can be: read, write, admin. Units are like: repo.code, repo.issues, repo.pulls."""
-    body: dict = {"name": name}
-    if permission is not None:
-        body["permission"] = permission
-    if units is not None:
-        body["units"] = units
-    if description is not None:
-        body["description"] = description
-    return _ok(_get_client().post(f"/orgs/{org}/teams", json=body))
+    return _call("POST", "/orgs/{org}/teams", locals())
 
 @_op(gitea_update)
 def edit_team(
@@ -1969,8 +1937,7 @@ def edit_team(
     units: Optional[list[str]] = None,
 ):
     """Edit a team's properties."""
-    body = _body(locals(), exclude=("team_id",))
-    return _ok(_get_client().patch(f"/teams/{team_id}", json=body))
+    return _call("PATCH", "/teams/{team_id}", locals())
 
 @_op(gitea_delete)
 def delete_team(team_id: int):
@@ -2028,10 +1995,7 @@ def create_org_label(
     description: Optional[str] = None,
 ):
     """Create a label in an organization."""
-    body: dict = {"name": name, "color": color}
-    if description is not None:
-        body["description"] = description
-    return _ok(_get_client().post(f"/orgs/{org}/labels", json=body))
+    return _call("POST", "/orgs/{org}/labels", locals())
 
 @_op(gitea_update)
 def edit_org_label(
@@ -2042,8 +2006,7 @@ def edit_org_label(
     description: Optional[str] = None,
 ):
     """Edit an organization label."""
-    body = _body(locals(), exclude=("org", "label_id"))
-    return _ok(_get_client().patch(f"/orgs/{org}/labels/{label_id}", json=body))
+    return _call("PATCH", "/orgs/{org}/labels/{label_id}", locals())
 
 @_op(gitea_delete)
 def delete_org_label(org: str, label_id: int):
@@ -2077,8 +2040,7 @@ def list_notifications(
 @_op(gitea_update)
 def mark_notifications_read(last_read_at: Optional[str] = None):
     """Mark all notifications as read."""
-    body = _body(locals())
-    return _ok(_get_client().put("/notifications", json=body))
+    return _call("PUT", "/notifications", locals())
 
 @_op(gitea_read)
 def get_notification_thread(thread_id: int):
@@ -2120,12 +2082,7 @@ def mark_repo_notifications_read(
     last_read_at: Optional[str] = None,
 ):
     """Mark all notifications in a repository as read."""
-    body = _body(locals(), exclude=("owner", "repo"))
-    return _ok(
-        _get_client().put(
-            f"/repos/{owner}/{repo}/notifications", json=body
-        )
-    )
+    return _call("PUT", "/repos/{owner}/{repo}/notifications", locals())
 
 @_op(gitea_read)
 def get_new_notification_count():
@@ -2241,18 +2198,7 @@ def admin_create_user(
     send_notify: Optional[bool] = None,
 ):
     """Create a new user (admin only)."""
-    body: dict = {
-        "username": username,
-        "email": email,
-        "password": password,
-    }
-    if must_change_password is not None:
-        body["must_change_password"] = must_change_password
-    if login_name is not None:
-        body["login_name"] = login_name
-    if send_notify is not None:
-        body["send_notify"] = send_notify
-    return _ok(_get_client().post("/admin/users", json=body))
+    return _call("POST", "/admin/users", locals())
 
 @_op(gitea_admin_write)
 def admin_edit_user(
@@ -2268,8 +2214,7 @@ def admin_edit_user(
     prohibit_login: Optional[bool] = None,
 ):
     """Edit a user's properties (admin only)."""
-    body = _body(locals(), exclude=("username",))
-    return _ok(_get_client().patch(f"/admin/users/{username}", json=body))
+    return _call("PATCH", "/admin/users/{username}", locals())
 
 @_op(gitea_admin_write)
 def admin_delete_user(username: str, purge: bool = False):
@@ -2314,16 +2259,7 @@ def admin_create_org(
 ):
     """Create an organization (admin only). owner_name is the user who will own the org."""
     visibility = _enforce_visibility(visibility)
-    body: dict = {"username": username}
-    if full_name is not None:
-        body["full_name"] = full_name
-    if description is not None:
-        body["description"] = description
-    if website is not None:
-        body["website"] = website
-    if visibility is not None:
-        body["visibility"] = visibility
-    return _ok(_get_client().post(f"/admin/users/{owner_name}/orgs", json=body))
+    return _call("POST", "/admin/users/{owner_name}/orgs", locals())
 
 @_op(gitea_admin_write)
 def admin_create_repo_for_user(
@@ -2335,14 +2271,7 @@ def admin_create_repo_for_user(
 ):
     """Create a repository for a user (admin only)."""
     private = _enforce_private(private)
-    body: dict = {"name": name}
-    if description is not None:
-        body["description"] = description
-    if private is not None:
-        body["private"] = private
-    if auto_init is not None:
-        body["auto_init"] = auto_init
-    return _ok(_get_client().post(f"/admin/users/{username}/repos", json=body))
+    return _call("POST", "/admin/users/{username}/repos", locals())
 
 @_op(gitea_admin_write)
 def admin_rename_user(username: str, new_username: str):
@@ -2705,12 +2634,7 @@ def get_git_tree(
     recursive: Optional[bool] = None,
 ):
     """Get the tree for a commit SHA."""
-    params = _body(locals(), exclude=("owner", "repo", "sha"))
-    return _ok(
-        _get_client().get(
-            f"/repos/{owner}/{repo}/git/trees/{sha}", params=params or None
-        )
-    )
+    return _call("GET", "/repos/{owner}/{repo}/git/trees/{sha}", locals())
 
 @_op(gitea_create)
 def transfer_repo(
@@ -2720,12 +2644,7 @@ def transfer_repo(
     team_ids: Optional[list[int]] = None,
 ):
     """Transfer a repository to another owner."""
-    body: dict = {"new_owner": new_owner}
-    if team_ids is not None:
-        body["team_ids"] = team_ids
-    return _ok(
-        _get_client().post(f"/repos/{owner}/{repo}/transfer", json=body)
-    )
+    return _call("POST", "/repos/{owner}/{repo}/transfer", locals())
 
 @_op(gitea_create)
 def create_repo_from_template(
@@ -2741,22 +2660,7 @@ def create_repo_from_template(
 ):
     """Create a repository from a template."""
     private = _enforce_private(private)
-    body: dict = {"name": name, "owner": owner}
-    if description is not None:
-        body["description"] = description
-    if private is not None:
-        body["private"] = private
-    if git_content is not None:
-        body["git_content"] = git_content
-    if topics is not None:
-        body["topics"] = topics
-    if labels is not None:
-        body["labels"] = labels
-    return _ok(
-        _get_client().post(
-            f"/repos/{template_owner}/{template_repo}/generate", json=body
-        )
-    )
+    return _call("POST", "/repos/{template_owner}/{template_repo}/generate", locals())
 
 @_op(gitea_read)
 def list_repo_assignees(owner: str, repo: str):
