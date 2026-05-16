@@ -274,22 +274,26 @@ def create_user_access_token(
 ):
     """Create a personal access token for a user.
 
-    Requires HTTP Basic auth. The password field can be the user's real
-    password OR an existing PAT with `write:user` (or `all`) scope —
-    Gitea's Basic.Verify tries the PAT path first. `username`/`password`
-    fall back to `GITEA_BASIC_USER` / `GITEA_BASIC_PASS` env vars if omitted.
+    Requires HTTP Basic auth. Defaults to self-token-rotation using the
+    configured `GITEA_TOKEN` as the Basic password (Gitea's Basic.Verify
+    accepts a PAT in the password field if it has `write:user` or `all`
+    scope); username is auto-derived from /user. Pass `username` +
+    `password` to create a token for a different user.
 
     The response's `sha1` field is the raw token — Gitea will not show it again.
     Common scopes: 'write:package', 'read:package', 'write:repository', 'all'.
     """
     from .config import get_settings
     s = get_settings()
-    user = username or s.gitea_basic_user
-    pwd = password or s.gitea_basic_pass
+    pwd = password or s.gitea_token
+    user = username
+    if not user:
+        me = _get_client().get("/user") or {}
+        user = me.get("login")
     if not user or not pwd:
         raise ValueError(
-            "username and password required (pass as arguments or set "
-            "GITEA_BASIC_USER / GITEA_BASIC_PASS in the MCP server env)"
+            "username/password unresolved — pass them as args, or ensure "
+            "GITEA_TOKEN is set and has write:user (or all) scope"
         )
     return _ok(
         _basic_auth_request(
