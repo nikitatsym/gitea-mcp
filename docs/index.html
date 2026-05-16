@@ -245,8 +245,8 @@
     <label for="basic-user">Basic Auth Username <span style="color:var(--muted);font-weight:400">(optional)</span></label>
     <input type="text" id="basic-user" placeholder="ari" spellcheck="false">
     <label for="basic-pass">Basic Auth Password <span style="color:var(--muted);font-weight:400">(optional)</span></label>
-    <input type="password" id="basic-pass" placeholder="paste your Gitea password" spellcheck="false">
-    <p class="hint">Only needed for <code>CreateUserAccessToken</code> &mdash; Gitea&rsquo;s <code>/users/{u}/tokens</code> endpoint refuses token auth.</p>
+    <input type="password" id="basic-pass" placeholder="password OR existing PAT with write:user scope" spellcheck="false">
+    <p class="hint">Only needed for <code>CreateUserAccessToken</code> &mdash; Gitea&rsquo;s <code>/users/{u}/tokens</code> rejects token auth via <code>Authorization: token …</code> header, but Basic.Verify accepts a PAT in the password field if it has <code>write:user</code> or <code>all</code> scope.</p>
 
     <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem">
       <label for="brief-max" style="display:inline;margin:0;font-size:0.9rem;white-space:nowrap;color:var(--text);font-weight:400">Brief max length:</label>

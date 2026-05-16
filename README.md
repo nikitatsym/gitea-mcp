@@ -44,7 +44,7 @@ Or use the interactive **[Setup Page](https://nikitatsym.github.io/gitea-mcp/)**
 | `GITEA_URL` | Yes | Base URL of your Gitea instance (e.g. `https://gitea.example.com`) |
 | `GITEA_TOKEN` | Yes | Personal access token with appropriate permissions |
 | `GITEA_BASIC_USER` | No | Username for HTTP Basic auth fallback (only used by `CreateUserAccessToken`, which Gitea refuses to authenticate via token) |
-| `GITEA_BASIC_PASS` | No | Password matching `GITEA_BASIC_USER` |
+| `GITEA_BASIC_PASS` | No | Password **or** existing PAT with `write:user` scope belonging to `GITEA_BASIC_USER` |
 | `GITEA_COMPACT` | No | Set to `true` to enable compact mode (see below) |
 | `GITEA_REQUIRE_BRIEF` | No | Require `<brief>summary</brief>` tag in issue body on create/edit (default: `true`) |
 | `GITEA_BRIEF_MAX_LENGTH` | No | Max character length for brief summary (default: `200`) |
