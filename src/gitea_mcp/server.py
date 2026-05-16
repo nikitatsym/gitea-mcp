@@ -37,9 +37,33 @@ def _is_bool_hint(hint) -> bool:
     return bool in args if args else False
 
 
+def _get_literal_values(hint):
+    """Extract Literal[...] choices, walking through Optional/Union wrappers."""
+    if hint is None:
+        return None
+    if typing.get_origin(hint) is typing.Literal:
+        return typing.get_args(hint)
+    for arg in typing.get_args(hint):
+        sub = _get_literal_values(arg)
+        if sub:
+            return sub
+    return None
+
+
 def _coerce_call(fn, params: dict):
-    """Coerce JSON-parsed params to match function signature, then call fn."""
+    """Coerce JSON-parsed params to match function signature, then call fn.
+
+    Rejects unknown parameter names and invalid Literal values. Silent
+    ignoring is the worst outcome (the caller thinks the filter/option is
+    working, but it isn't); fail fast instead.
+    """
     sig = inspect.signature(fn)
+    valid = set(sig.parameters.keys())
+    unknown = sorted(set(params.keys()) - valid)
+    if unknown:
+        raise ValueError(
+            f"Unknown parameters: {unknown}. Valid: {sorted(valid)}"
+        )
     hints = typing.get_type_hints(fn)
     kwargs = {}
     for name, param in sig.parameters.items():
@@ -47,6 +71,12 @@ def _coerce_call(fn, params: dict):
             continue
         val = params[name]
         hint = hints.get(name)
+        lit_vals = _get_literal_values(hint)
+        if lit_vals is not None and val not in lit_vals:
+            raise ValueError(
+                f"Invalid value {val!r} for {name!r}. "
+                f"Accepted: {list(lit_vals)}"
+            )
         if hint and _is_bool_hint(hint) and not isinstance(val, bool):
             default = param.default
             if default is inspect.Parameter.empty or default is None:

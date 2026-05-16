@@ -62,6 +62,29 @@ def _ok(data):
     return data
 
 
+def _body(local_vars: dict, exclude=(), rename: dict | None = None) -> dict:
+    """Build a JSON body or query-params dict from function locals.
+
+    Drops keys whose value is None and any key listed in `exclude`. The
+    optional `rename` map translates Python parameter names to API field
+    names (e.g. `{"status_types": "status-types"}`). Use as:
+
+        body = _body(locals(), exclude=("owner", "repo"))
+        params = _body(locals(), exclude=("brief",),
+                       rename={"status_types": "status-types"})
+
+    Adding a new optional parameter to the function signature automatically
+    forwards it to the API — no `if x is not None: body["x"] = x` to forget.
+    """
+    excl = set(exclude)
+    rmap = rename or {}
+    return {
+        rmap.get(k, k): v
+        for k, v in local_vars.items()
+        if v is not None and k not in excl
+    }
+
+
 # ── Slim functions ───────────────────────────────────────────────────────────
 
 
