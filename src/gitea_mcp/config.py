@@ -8,8 +8,6 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     gitea_url: str = ""
     gitea_token: str = ""
-    gitea_basic_user: str = ""
-    gitea_basic_pass: str = ""
 
 
 _settings: Settings | None = None
