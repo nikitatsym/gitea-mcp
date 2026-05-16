@@ -237,6 +237,69 @@ def update_user_settings(
     """Update the current user's settings."""
     return _call("PATCH", "/user/settings", locals())
 
+# ── Access Tokens ────────────────────────────────────────────────────────────
+
+
+def _basic_auth_request(method: str, path: str, username: str, password: str, json=None):
+    """Call Gitea API with HTTP Basic auth.
+
+    /users/{username}/tokens hard-requires basic auth (reqBasicOrRevProxyAuth
+    in routers/api/v1/api.go) — the token-auth client cannot reach it.
+    """
+    import httpx
+    from .client import GiteaError
+    base = _get_client()._base
+    r = httpx.request(
+        method,
+        f"{base}/api/v1{path}",
+        auth=(username, password),
+        json=json,
+        timeout=30.0,
+    )
+    if r.status_code >= 400:
+        try:
+            body = r.json()
+        except Exception:
+            body = r.text
+        raise GiteaError(r.status_code, method, path, body)
+    return r.json() if r.content else None
+
+
+@_op(gitea_create)
+def create_user_access_token(
+    name: str,
+    scopes: list[str],
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+):
+    """Create a personal access token for a user.
+
+    Requires HTTP Basic auth (Gitea's /users/{u}/tokens endpoint refuses
+    token auth). `username`/`password` fall back to `GITEA_BASIC_USER` /
+    `GITEA_BASIC_PASS` env vars if omitted.
+
+    The response's `sha1` field is the raw token — Gitea will not show it again.
+    Common scopes: 'write:package', 'read:package', 'write:repository', 'all'.
+    """
+    from .config import get_settings
+    s = get_settings()
+    user = username or s.gitea_basic_user
+    pwd = password or s.gitea_basic_pass
+    if not user or not pwd:
+        raise ValueError(
+            "username and password required (pass as arguments or set "
+            "GITEA_BASIC_USER / GITEA_BASIC_PASS in the MCP server env)"
+        )
+    return _ok(
+        _basic_auth_request(
+            "POST",
+            f"/users/{user}/tokens",
+            user,
+            pwd,
+            json={"name": name, "scopes": scopes},
+        )
+    )
+
 # ── SSH / GPG Keys ──────────────────────────────────────────────────────────
 
 
