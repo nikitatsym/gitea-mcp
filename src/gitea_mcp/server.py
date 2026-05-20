@@ -131,7 +131,15 @@ _all_grouped: dict[str, str] = {}             # {PascalName: group_name}
 
 
 def _build_help(group_name: str) -> str:
-    """One line per operation with parameter names + types."""
+    """Per-op signature with types, plus docstring body and per-param
+    descriptions for any field with a non-empty `Field(description=...)`.
+
+    Bullets surface caller-facing constraints (IDs vs names, formats,
+    conditional rules) on the same call as `help`, so an agent reading
+    only help doesn't need a `schema` round-trip to avoid the obvious
+    traps. Simple `owner/repo/title`-style params stay clean — they have
+    no description, so no bullet is emitted.
+    """
     ops = _group_ops[group_name]
     lines = []
     for pascal_name, fn in ops.items():
@@ -141,12 +149,17 @@ def _build_help(group_name: str) -> str:
             for n, f in model.model_fields.items()
         ]
         doc = inspect.getdoc(fn) or ""
-        head = doc.split("\n", 1)[0].strip()
+        head, _, body = doc.partition("\n\n")
+        head = " ".join(head.split())
         lines.append(f"  {pascal_name}({', '.join(parts)}) — {head}")
+        for body_line in body.rstrip().splitlines():
+            lines.append(f"    {body_line}" if body_line else "")
+        for name, field in model.model_fields.items():
+            if field.description:
+                lines.append(f"    {name}: {field.description}")
     header = (
-        f"{len(ops)} operations available. "
-        f"Call operation='schema', params={{'op': 'OpName'}} for full JSON Schema "
-        "(descriptions, constraints, enums)."
+        f"{len(ops)} operations available. Call operation='schema', "
+        "params={'op': 'OpName'} for the full JSON Schema."
     )
     return f"{header}\n" + "\n".join(lines)
 
