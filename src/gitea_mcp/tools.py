@@ -2,7 +2,9 @@
 
 import base64
 import re
-from typing import Optional
+from typing import Annotated, Literal, Optional
+
+from pydantic import Field
 
 from .client import GiteaClient
 from .prepare import (
@@ -66,12 +68,20 @@ def _call(
 
 # ── Groups ────────────────────────────────────────────────────────────────────
 
-gitea_read = Group("gitea_read", "Gitea read operations (GET). operation=\"help\" to list.")
-gitea_create = Group("gitea_create", "Gitea create operations (POST). operation=\"help\" to list.")
-gitea_update = Group("gitea_update", "Gitea update operations (PUT/PATCH). operation=\"help\" to list.")
-gitea_delete = Group("gitea_delete", "Gitea delete operations (DELETE). operation=\"help\" to list.")
-gitea_admin_read = Group("gitea_admin_read", "Gitea admin read operations (GET /admin/*). operation=\"help\" to list.")
-gitea_admin_write = Group("gitea_admin_write", "Gitea admin write operations (POST/PUT/PATCH/DELETE /admin/*). operation=\"help\" to list.")
+_GROUP_USAGE = (
+    "\n\n"
+    "operation='help'   — list ops with parameter names + types.\n"
+    "operation='schema' — JSON Schema for one op. params={'op': 'OpName'} or params={} to list op names.\n"
+    "operation='<OpName>' params={...} — invoke. Params validated strictly: "
+    "unknown keys, wrong types, missing required → ValueError with field-level detail."
+)
+
+gitea_read = Group("gitea_read", "Gitea read operations (GET)." + _GROUP_USAGE)
+gitea_create = Group("gitea_create", "Gitea create operations (POST)." + _GROUP_USAGE)
+gitea_update = Group("gitea_update", "Gitea update operations (PUT/PATCH)." + _GROUP_USAGE)
+gitea_delete = Group("gitea_delete", "Gitea delete operations (DELETE)." + _GROUP_USAGE)
+gitea_admin_read = Group("gitea_admin_read", "Gitea admin read operations (GET /admin/*)." + _GROUP_USAGE)
+gitea_admin_write = Group("gitea_admin_write", "Gitea admin write operations (POST/PUT/PATCH/DELETE /admin/*)." + _GROUP_USAGE)
 
 # ── General ──────────────────────────────────────────────────────────────────
 
@@ -92,9 +102,9 @@ def get_current_user():
 
 @_op(gitea_read)
 def search_users(
-    query: str,
-    limit: Optional[int] = None,
-    page: Optional[int] = None,
+    query: Annotated[str, Field(description="Search keyword (substring match against username/full name).")],
+    limit: Annotated[Optional[int], Field(description="Page size. Server default if omitted.")] = None,
+    page: Annotated[Optional[int], Field(description="1-based page number.")] = None,
 ):
     """Search for users by keyword."""
     return _call("GET", "/users/search", locals(), rename={"query": "q"})
@@ -181,8 +191,8 @@ def list_oauth2_apps():
 @_op(gitea_create)
 def create_oauth2_app(
     name: str,
-    redirect_uris: list[str],
-    confidential_client: Optional[bool] = None,
+    redirect_uris: Annotated[list[str], Field(description="Allowed OAuth2 redirect URIs (absolute URLs).")],
+    confidential_client: Annotated[Optional[bool], Field(description="True = confidential client (server-side, uses client_secret); False = public (SPA/native).")] = None,
 ):
     """Create an OAuth2 application for the current user."""
     return _call("POST", "/user/applications/oauth2", locals())
@@ -196,8 +206,8 @@ def get_oauth2_app(app_id: int):
 def edit_oauth2_app(
     app_id: int,
     name: Optional[str] = None,
-    redirect_uris: Optional[list[str]] = None,
-    confidential_client: Optional[bool] = None,
+    redirect_uris: Annotated[Optional[list[str]], Field(description="Replacement set of allowed redirect URIs.")] = None,
+    confidential_client: Annotated[Optional[bool], Field(description="True = confidential (uses client_secret); False = public.")] = None,
 ):
     """Edit an OAuth2 application."""
     return _call("PATCH", "/user/applications/oauth2/{app_id}", locals())
@@ -228,11 +238,11 @@ def update_user_settings(
     full_name: Optional[str] = None,
     location: Optional[str] = None,
     website: Optional[str] = None,
-    language: Optional[str] = None,
+    language: Annotated[Optional[str], Field(description="UI language code, e.g. 'en-US', 'ru-RU'.")] = None,
     hide_email: Optional[bool] = None,
     hide_activity: Optional[bool] = None,
-    theme: Optional[str] = None,
-    diff_view_style: Optional[str] = None,
+    theme: Annotated[Optional[str], Field(description="UI theme name as configured in Gitea (e.g. 'gitea-light', 'gitea-dark', 'arc-green').")] = None,
+    diff_view_style: Annotated[Optional[Literal["split", "unified"]], Field(description="Default diff view style.")] = None,
 ):
     """Update the current user's settings."""
     return _call("PATCH", "/user/settings", locals())
@@ -267,10 +277,15 @@ def _basic_auth_request(method: str, path: str, username: str, password: str, js
 
 @_op(gitea_create)
 def create_user_access_token(
-    name: str,
-    scopes: list[str],
-    username: Optional[str] = None,
-    password: Optional[str] = None,
+    name: Annotated[str, Field(description="Human-readable token name (shown in user's token list).")],
+    scopes: Annotated[list[str], Field(description=(
+        "OAuth-style scope strings. Format: '<verb>:<resource>' or 'all'. "
+        "Verbs: read, write. Resources: activitypub, admin, issue, misc, "
+        "notification, organization, package, repository, user. "
+        "Examples: ['write:repository'], ['read:user', 'read:package'], ['all']."
+    ))],
+    username: Annotated[Optional[str], Field(description="Target username. Defaults to the authenticated user (derived from /user).")] = None,
+    password: Annotated[Optional[str], Field(description="Basic-auth password OR an existing PAT with 'write:user' / 'all' scope. Defaults to GITEA_TOKEN.")] = None,
 ):
     """Create a personal access token for a user.
 
@@ -281,7 +296,6 @@ def create_user_access_token(
     `password` to create a token for a different user.
 
     The response's `sha1` field is the raw token — Gitea will not show it again.
-    Common scopes: 'write:package', 'read:package', 'write:repository', 'all'.
     """
     from .config import get_settings
     s = get_settings()
@@ -314,7 +328,10 @@ def list_ssh_keys():
     return _ok(_get_client().paginate("/user/keys"))
 
 @_op(gitea_create)
-def create_ssh_key(title: str, key: str):
+def create_ssh_key(
+    title: Annotated[str, Field(description="Human-readable key label.")],
+    key: Annotated[str, Field(description="OpenSSH public-key text — full line, e.g. 'ssh-ed25519 AAAA... user@host'.")],
+):
     """Add a new SSH key for the current user."""
     return _ok(_get_client().post("/user/keys", json={"title": title, "key": key}))
 
@@ -329,7 +346,9 @@ def list_gpg_keys():
     return _ok(_get_client().paginate("/user/gpg_keys"))
 
 @_op(gitea_create)
-def create_gpg_key(armored_public_key: str):
+def create_gpg_key(
+    armored_public_key: Annotated[str, Field(description="ASCII-armored OpenPGP public key block (begins with '-----BEGIN PGP PUBLIC KEY BLOCK-----').")],
+):
     """Add a new GPG key for the current user."""
     return _ok(
         _get_client().post(
@@ -348,12 +367,12 @@ def delete_gpg_key(key_id: int):
 @_op(gitea_read)
 def search_repos(
     query: str,
-    topic: Optional[bool] = None,
-    sort: Optional[str] = None,
-    order: Optional[str] = None,
-    limit: Optional[int] = 20,
-    page: Optional[int] = None,
-    brief: bool = True,
+    topic: Annotated[Optional[bool], Field(description="True = match `query` against repository topic names instead of repo name/description.")] = None,
+    sort: Annotated[Optional[Literal["alpha", "created", "updated", "size", "id"]], Field(description="Sort field for results.")] = None,
+    order: Annotated[Optional[Literal["asc", "desc"]], Field(description="Sort direction.")] = None,
+    limit: Annotated[Optional[int], Field(description="Page size. Server default if omitted.")] = 20,
+    page: Annotated[Optional[int], Field(description="1-based page number.")] = None,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea repo objects.")] = True,
 ):
     """Search for repositories by keyword.
 
@@ -373,10 +392,10 @@ def create_repo(
     name: str,
     description: Optional[str] = None,
     private: Optional[bool] = None,
-    auto_init: Optional[bool] = None,
-    gitignores: Optional[str] = None,
-    license: Optional[str] = None,
-    readme: Optional[str] = None,
+    auto_init: Annotated[Optional[bool], Field(description="True = initialize repo with README/.gitignore/license per the template fields below.")] = None,
+    gitignores: Annotated[Optional[str], Field(description="Comma-separated Gitea .gitignore template names (e.g. 'Go,Python'). Names — not file contents.")] = None,
+    license: Annotated[Optional[str], Field(description="Gitea license template name (e.g. 'MIT', 'Apache-2.0'). Name — not the license text.")] = None,
+    readme: Annotated[Optional[str], Field(description="Gitea README template name (e.g. 'Default'). Name — not file contents.")] = None,
     default_branch: Optional[str] = None,
 ):
     """Create a new repository for the authenticated user."""
@@ -426,7 +445,11 @@ def fork_repo(
     return _call("POST", "/repos/{owner}/{repo}/forks", locals())
 
 @_op(gitea_read)
-def list_forks(owner: str, repo: str, brief: bool = True):
+def list_forks(
+    owner: str,
+    repo: str,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea repo objects.")] = True,
+):
     """List forks of a repository.
 
     brief (default True): compact view. Set brief=False for full objects."""
@@ -441,7 +464,11 @@ def list_repo_topics(owner: str, repo: str):
     return _ok(_get_client().get(f"/repos/{owner}/{repo}/topics"))
 
 @_op(gitea_update)
-def set_repo_topics(owner: str, repo: str, topics: list[str]):
+def set_repo_topics(
+    owner: str,
+    repo: str,
+    topics: Annotated[list[str], Field(description="Full replacement list of topic names — existing topics are removed if not present here.")],
+):
     """Set a repository's topics, replacing all existing ones."""
     return _ok(
         _get_client().put(f"/repos/{owner}/{repo}/topics", json={"topics": topics})
@@ -454,7 +481,10 @@ def list_repo_collaborators(owner: str, repo: str):
 
 @_op(gitea_update)
 def add_repo_collaborator(
-    owner: str, repo: str, collaborator: str, permission: str
+    owner: str,
+    repo: str,
+    collaborator: str,
+    permission: Annotated[Literal["read", "write", "admin"], Field(description="Permission level granted to the collaborator on this repo.")],
 ):
     """Add a collaborator to a repository."""
     return _ok(
@@ -482,7 +512,9 @@ def unstar_repo(owner: str, repo: str):
     return _ok(_get_client().delete(f"/user/starred/{owner}/{repo}"))
 
 @_op(gitea_read)
-def list_my_starred_repos(brief: bool = True):
+def list_my_starred_repos(
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea repo objects.")] = True,
+):
     """List repositories starred by the current user.
 
     brief (default True): compact view. Set brief=False for full objects."""
@@ -507,7 +539,9 @@ def list_repo_watchers(owner: str, repo: str):
     return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/subscribers"))
 
 @_op(gitea_read)
-def list_my_subscriptions(brief: bool = True):
+def list_my_subscriptions(
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea repo objects.")] = True,
+):
     """List repositories watched by the current user.
 
     brief (default True): compact view. Set brief=False for full objects."""
@@ -567,9 +601,9 @@ def list_repo_webhooks(owner: str, repo: str):
 def create_repo_webhook(
     owner: str,
     repo: str,
-    config: dict,
-    events: list[str],
-    hook_type: str = "gitea",
+    config: Annotated[dict, Field(description="Webhook config (string keys, string values). Required keys depend on hook_type. For 'gitea'/'gogs': {'url': 'https://...', 'content_type': 'json'|'form', 'secret': '...'}. Other hook types use their own URL/token fields.")],
+    events: Annotated[list[str], Field(description="Gitea event names to subscribe to, e.g. ['push', 'pull_request', 'issues', 'create', 'delete', 'release', 'issue_comment'].")],
+    hook_type: Annotated[Literal["gitea", "gogs", "slack", "discord", "dingtalk", "telegram", "msteams", "feishu", "matrix", "wechatwork", "packagist"], Field(description="Webhook delivery type — determines required keys in `config`.")] = "gitea",
     active: bool = True,
 ):
     """Create a webhook for a repository."""
@@ -586,8 +620,8 @@ def edit_repo_webhook(
     owner: str,
     repo: str,
     hook_id: int,
-    config: Optional[dict] = None,
-    events: Optional[list[str]] = None,
+    config: Annotated[Optional[dict], Field(description="Replacement webhook config (string keys/values). Shape depends on the hook's type — for 'gitea'/'gogs': {'url': ..., 'content_type': 'json'|'form', 'secret': ...}.")] = None,
+    events: Annotated[Optional[list[str]], Field(description="Replacement list of Gitea event names (e.g. ['push', 'pull_request']).")] = None,
     active: Optional[bool] = None,
 ):
     """Edit a repository webhook."""
@@ -614,9 +648,9 @@ def list_org_webhooks(org: str):
 @_op(gitea_create)
 def create_org_webhook(
     org: str,
-    config: dict,
-    events: list[str],
-    hook_type: str = "gitea",
+    config: Annotated[dict, Field(description="Webhook config (string keys, string values). Required keys depend on hook_type. For 'gitea'/'gogs': {'url': 'https://...', 'content_type': 'json'|'form', 'secret': '...'}. Other hook types use their own URL/token fields.")],
+    events: Annotated[list[str], Field(description="Gitea event names to subscribe to, e.g. ['push', 'pull_request', 'issues', 'create', 'delete', 'release', 'issue_comment'].")],
+    hook_type: Annotated[Literal["gitea", "gogs", "slack", "discord", "dingtalk", "telegram", "msteams", "feishu", "matrix", "wechatwork", "packagist"], Field(description="Webhook delivery type — determines required keys in `config`.")] = "gitea",
     active: bool = True,
 ):
     """Create a webhook for an organization."""
@@ -632,8 +666,8 @@ def create_org_webhook(
 def edit_org_webhook(
     org: str,
     hook_id: int,
-    config: Optional[dict] = None,
-    events: Optional[list[str]] = None,
+    config: Annotated[Optional[dict], Field(description="Replacement webhook config (string keys/values). Shape depends on the hook's type — for 'gitea'/'gogs': {'url': ..., 'content_type': 'json'|'form', 'secret': ...}.")] = None,
+    events: Annotated[Optional[list[str]], Field(description="Replacement list of Gitea event names (e.g. ['push', 'pull_request']).")] = None,
     active: Optional[bool] = None,
 ):
     """Edit an organization webhook."""
@@ -657,8 +691,8 @@ def create_deploy_key(
     owner: str,
     repo: str,
     title: str,
-    key: str,
-    read_only: bool = True,
+    key: Annotated[str, Field(description="OpenSSH public-key text — full line, e.g. 'ssh-ed25519 AAAA... user@host'.")],
+    read_only: Annotated[bool, Field(description="True (default) = read-only clone access; False = read+write (push allowed).")] = True,
 ):
     """Add a deploy key to a repository."""
     body: dict = {"title": title, "key": key, "read_only": read_only}
@@ -682,7 +716,7 @@ def get_file_content(
     owner: str,
     repo: str,
     filepath: str,
-    ref: Optional[str] = None,
+    ref: Annotated[Optional[str], Field(description="Branch / tag / commit SHA to read from. Defaults to the repo's default branch.")] = None,
 ):
     """Get the metadata and content of a file in a repository."""
     return _call("GET", "/repos/{owner}/{repo}/contents/{filepath}", locals())
@@ -692,12 +726,12 @@ def create_file(
     owner: str,
     repo: str,
     filepath: str,
-    content: str,
-    message: str,
-    branch: Optional[str] = None,
-    new_branch: Optional[str] = None,
-    author_name: Optional[str] = None,
-    author_email: Optional[str] = None,
+    content: Annotated[str, Field(description="File body as PLAINTEXT. The tool base64-encodes it for the API — do NOT pre-encode.")],
+    message: Annotated[str, Field(description="Git commit message for this change.")],
+    branch: Annotated[Optional[str], Field(description="Branch to commit on (HEAD advances to the new commit). Defaults to the repo's default branch.")] = None,
+    new_branch: Annotated[Optional[str], Field(description="If set, create this new branch from `branch` and commit there (PR-style flow). The base `branch` is left untouched.")] = None,
+    author_name: Annotated[Optional[str], Field(description="Override the git author name for this commit.")] = None,
+    author_email: Annotated[Optional[str], Field(description="Override the git author email for this commit.")] = None,
 ):
     """Create a new file in a repository. Content is provided as plain text and will be base64-encoded automatically."""
     encoded = base64.b64encode(content.encode()).decode()
@@ -722,11 +756,11 @@ def update_file(
     owner: str,
     repo: str,
     filepath: str,
-    content: str,
-    message: str,
-    sha: str,
-    branch: Optional[str] = None,
-    new_branch: Optional[str] = None,
+    content: Annotated[str, Field(description="New file body as PLAINTEXT. The tool base64-encodes it for the API — do NOT pre-encode.")],
+    message: Annotated[str, Field(description="Git commit message for this change.")],
+    sha: Annotated[str, Field(description="Blob SHA of the existing file (optimistic concurrency). Fetch via get_file_content — the response's top-level `sha`.")],
+    branch: Annotated[Optional[str], Field(description="Branch to commit on (HEAD advances to the new commit). Defaults to the repo's default branch.")] = None,
+    new_branch: Annotated[Optional[str], Field(description="If set, create this new branch from `branch` and commit there (PR-style flow). The base `branch` is left untouched.")] = None,
 ):
     """Update an existing file in a repository. Content is provided as plain text and will be base64-encoded automatically. The sha of the existing file is required."""
     encoded = base64.b64encode(content.encode()).decode()
@@ -744,9 +778,9 @@ def delete_file(
     owner: str,
     repo: str,
     filepath: str,
-    message: str,
-    sha: str,
-    branch: Optional[str] = None,
+    message: Annotated[str, Field(description="Git commit message for the deletion.")],
+    sha: Annotated[str, Field(description="Blob SHA of the file to delete (optimistic concurrency). Fetch via get_file_content.")],
+    branch: Annotated[Optional[str], Field(description="Branch to commit the deletion on. Defaults to the repo's default branch.")] = None,
 ):
     """Delete a file in a repository. The sha of the file to delete is required."""
     body: dict = {"message": message, "sha": sha}
@@ -762,8 +796,8 @@ def delete_file(
 def get_directory_content(
     owner: str,
     repo: str,
-    dirpath: str = "",
-    ref: Optional[str] = None,
+    dirpath: Annotated[str, Field(description="Path inside the repo. Empty string = repo root.")] = "",
+    ref: Annotated[Optional[str], Field(description="Branch / tag / commit SHA to read from. Defaults to the repo's default branch.")] = None,
 ):
     """Get the contents of a directory in a repository."""
     return _call("GET", "/repos/{owner}/{repo}/contents/{dirpath}", locals())
@@ -773,7 +807,7 @@ def get_raw_file(
     owner: str,
     repo: str,
     filepath: str,
-    ref: Optional[str] = None,
+    ref: Annotated[Optional[str], Field(description="Branch / tag / commit SHA to read from. Defaults to the repo's default branch.")] = None,
 ):
     """Get the raw content of a file in a repository."""
     params = _body(locals(), exclude=("owner", "repo", "filepath"))
@@ -798,9 +832,9 @@ def get_branch(owner: str, repo: str, branch: str):
 def create_branch(
     owner: str,
     repo: str,
-    new_branch_name: str,
-    old_branch_name: Optional[str] = None,
-    old_ref_name: Optional[str] = None,
+    new_branch_name: Annotated[str, Field(description="Name of the new branch to create.")],
+    old_branch_name: Annotated[Optional[str], Field(description="Source branch to fork from. Mutually exclusive with `old_ref_name`. If both are omitted, the repo's default branch is used.")] = None,
+    old_ref_name: Annotated[Optional[str], Field(description="Source ref (tag name or commit SHA) to fork from. Mutually exclusive with `old_branch_name`.")] = None,
 ):
     """Create a new branch in a repository."""
     return _call("POST", "/repos/{owner}/{repo}/branches", locals())
@@ -819,15 +853,15 @@ def list_branch_protections(owner: str, repo: str):
 def create_branch_protection(
     owner: str,
     repo: str,
-    branch_name: str,
-    enable_push: Optional[bool] = None,
-    enable_push_whitelist: Optional[bool] = None,
-    push_whitelist_usernames: Optional[list[str]] = None,
-    enable_merge_whitelist: Optional[bool] = None,
-    merge_whitelist_usernames: Optional[list[str]] = None,
-    required_approvals: Optional[int] = None,
-    enable_status_check: Optional[bool] = None,
-    status_check_contexts: Optional[list[str]] = None,
+    branch_name: Annotated[str, Field(description="Branch name OR glob pattern (e.g. 'main', 'release/*') the rule applies to.")],
+    enable_push: Annotated[Optional[bool], Field(description="If False, nobody can push directly to the matched branch (PR-only).")] = None,
+    enable_push_whitelist: Annotated[Optional[bool], Field(description="If True, only users listed in `push_whitelist_usernames` may push.")] = None,
+    push_whitelist_usernames: Annotated[Optional[list[str]], Field(description="USERNAMES allowed to push when push whitelist is enabled (NOT team names — use the team-id variant on the Gitea API if needed).")] = None,
+    enable_merge_whitelist: Annotated[Optional[bool], Field(description="If True, only users in `merge_whitelist_usernames` may merge PRs into the matched branch.")] = None,
+    merge_whitelist_usernames: Annotated[Optional[list[str]], Field(description="USERNAMES allowed to merge when merge whitelist is enabled.")] = None,
+    required_approvals: Annotated[Optional[int], Field(description="Minimum number of approving reviews required before a PR may merge.")] = None,
+    enable_status_check: Annotated[Optional[bool], Field(description="If True, listed status contexts must be green before merge.")] = None,
+    status_check_contexts: Annotated[Optional[list[str]], Field(description="Required commit-status context strings (matches the `context` field of create_commit_status).")] = None,
 ):
     """Create a branch protection rule for a repository."""
     return _call("POST", "/repos/{owner}/{repo}/branch_protections", locals())
@@ -844,14 +878,14 @@ def edit_branch_protection(
     owner: str,
     repo: str,
     name: str,
-    enable_push: Optional[bool] = None,
-    enable_push_whitelist: Optional[bool] = None,
-    push_whitelist_usernames: Optional[list[str]] = None,
-    enable_merge_whitelist: Optional[bool] = None,
-    merge_whitelist_usernames: Optional[list[str]] = None,
-    required_approvals: Optional[int] = None,
-    enable_status_check: Optional[bool] = None,
-    status_check_contexts: Optional[list[str]] = None,
+    enable_push: Annotated[Optional[bool], Field(description="If False, nobody can push directly to the matched branch (PR-only).")] = None,
+    enable_push_whitelist: Annotated[Optional[bool], Field(description="If True, only users listed in `push_whitelist_usernames` may push.")] = None,
+    push_whitelist_usernames: Annotated[Optional[list[str]], Field(description="USERNAMES allowed to push when push whitelist is enabled (NOT team names).")] = None,
+    enable_merge_whitelist: Annotated[Optional[bool], Field(description="If True, only users in `merge_whitelist_usernames` may merge PRs into the matched branch.")] = None,
+    merge_whitelist_usernames: Annotated[Optional[list[str]], Field(description="USERNAMES allowed to merge when merge whitelist is enabled.")] = None,
+    required_approvals: Annotated[Optional[int], Field(description="Minimum number of approving reviews required before a PR may merge.")] = None,
+    enable_status_check: Annotated[Optional[bool], Field(description="If True, listed status contexts must be green before merge.")] = None,
+    status_check_contexts: Annotated[Optional[list[str]], Field(description="Required commit-status context strings (matches the `context` field of create_commit_status).")] = None,
 ):
     """Edit a branch protection rule."""
     return _call("PATCH", "/repos/{owner}/{repo}/branch_protections/{name}", locals())
@@ -875,9 +909,9 @@ def list_tag_protections(owner: str, repo: str):
 def create_tag_protection(
     owner: str,
     repo: str,
-    name_pattern: str,
-    whitelist_usernames: Optional[list[str]] = None,
-    whitelist_teams: Optional[list[str]] = None,
+    name_pattern: Annotated[str, Field(description="Glob pattern for tag names this rule applies to (e.g. 'v*', 'release-*').")],
+    whitelist_usernames: Annotated[Optional[list[str]], Field(description="USERNAMES allowed to create/push tags matching the pattern.")] = None,
+    whitelist_teams: Annotated[Optional[list[str]], Field(description="Team names (within the owning organization) whose members may create/push matching tags.")] = None,
 ):
     """Create a tag protection rule for a repository."""
     return _call("POST", "/repos/{owner}/{repo}/tag_protections", locals())
@@ -896,9 +930,9 @@ def edit_tag_protection(
     owner: str,
     repo: str,
     tag_protection_id: int,
-    name_pattern: Optional[str] = None,
-    whitelist_usernames: Optional[list[str]] = None,
-    whitelist_teams: Optional[list[str]] = None,
+    name_pattern: Annotated[Optional[str], Field(description="Replacement glob pattern for tag names (e.g. 'v*').")] = None,
+    whitelist_usernames: Annotated[Optional[list[str]], Field(description="Replacement list of USERNAMES allowed to create/push matching tags.")] = None,
+    whitelist_teams: Annotated[Optional[list[str]], Field(description="Replacement list of team names whose members may create/push matching tags.")] = None,
 ):
     """Edit a tag protection rule."""
     return _call("PATCH", "/repos/{owner}/{repo}/tag_protections/{tag_protection_id}", locals())
@@ -919,12 +953,12 @@ def delete_tag_protection(owner: str, repo: str, tag_protection_id: int):
 def list_commits(
     owner: str,
     repo: str,
-    sha: Optional[str] = None,
-    path: Optional[str] = None,
-    stat: Optional[bool] = None,
-    limit: Optional[int] = 20,
-    page: Optional[int] = None,
-    brief: bool = True,
+    sha: Annotated[Optional[str], Field(description="Start ref (branch / tag / commit SHA) to walk from. Defaults to the repo's default branch.")] = None,
+    path: Annotated[Optional[str], Field(description="Only return commits that touched this file or directory path.")] = None,
+    stat: Annotated[Optional[bool], Field(description="If True, include per-commit additions/deletions stats in the response. Costs extra time on the server.")] = None,
+    limit: Annotated[Optional[int], Field(description="Page size (commits per page).")] = 20,
+    page: Annotated[Optional[int], Field(description="1-based page number.")] = None,
+    brief: Annotated[bool, Field(description="True (default) = compact view (short sha, first line of message, author, date); False = full commit objects.")] = True,
 ):
     """List commits in a repository.
 
@@ -969,10 +1003,10 @@ def create_commit_status(
     owner: str,
     repo: str,
     sha: str,
-    state: str,
-    target_url: Optional[str] = None,
-    description: Optional[str] = None,
-    context: Optional[str] = None,
+    state: Annotated[Literal["pending", "success", "error", "failure", "warning"], Field(description="Status state. Drives CI badge and (with branch protection) merge gating.")],
+    target_url: Annotated[Optional[str], Field(description="URL the status badge links to — usually a CI run / log / dashboard for this check.")] = None,
+    description: Annotated[Optional[str], Field(description="Short human-readable summary shown next to the badge.")] = None,
+    context: Annotated[Optional[str], Field(description="Identifier for this check (e.g. 'ci/build', 'lint'). Statuses are grouped by context; posting a new state with the same context overwrites the previous one.")] = None,
 ):
     """Create a commit status. State must be one of: pending, success, error, failure, warning."""
     return _call("POST", "/repos/{owner}/{repo}/statuses/{sha}", locals())
@@ -995,8 +1029,8 @@ def create_tag(
     owner: str,
     repo: str,
     tag_name: str,
-    target: Optional[str] = None,
-    message: Optional[str] = None,
+    target: Annotated[Optional[str], Field(description="Branch name, commit SHA, or existing tag to anchor the new tag to. Defaults to the repo's default branch HEAD.")] = None,
+    message: Annotated[Optional[str], Field(description="Annotated-tag message. Omit / empty → creates a lightweight tag instead of annotated.")] = None,
 ):
     """Create a new tag in a repository."""
     return _call("POST", "/repos/{owner}/{repo}/tags", locals())
@@ -1007,7 +1041,11 @@ def delete_tag(owner: str, repo: str, tag: str):
     return _call("DELETE", "/repos/{owner}/{repo}/tags/{tag}", locals())
 
 @_op(gitea_read)
-def list_releases(owner: str, repo: str, brief: bool = True):
+def list_releases(
+    owner: str,
+    repo: str,
+    brief: Annotated[bool, Field(description="True (default) = compact view (id, tag_name, name, draft, prerelease, published_at); False = full release objects.")] = True,
+):
     """List a repository's releases.
 
     brief (default True): compact view — id, tag, name, draft/prerelease,
@@ -1036,12 +1074,12 @@ def get_release(owner: str, repo: str, release_id: int):
 def create_release(
     owner: str,
     repo: str,
-    tag_name: str,
-    target_commitish: Optional[str] = None,
-    name: Optional[str] = None,
-    body: Optional[str] = None,
-    draft: Optional[bool] = None,
-    prerelease: Optional[bool] = None,
+    tag_name: Annotated[str, Field(description="Git tag name. If the tag does not exist, Gitea creates it on `target_commitish`.")],
+    target_commitish: Annotated[Optional[str], Field(description="Branch name OR commit SHA the tag should point at when it has to be created. Ignored if the tag already exists. Defaults to the repo's default branch.")] = None,
+    name: Annotated[Optional[str], Field(description="Release title shown in the UI (distinct from `tag_name`).")] = None,
+    body: Annotated[Optional[str], Field(description="Release notes / description (markdown).")] = None,
+    draft: Annotated[Optional[bool], Field(description="If True, save as an unpublished draft visible only to maintainers.")] = None,
+    prerelease: Annotated[Optional[bool], Field(description="If True, mark as a pre-release (alpha/beta/rc) — clients filtering for stable releases will skip it.")] = None,
 ):
     """Create a new release in a repository."""
     return _call("POST", "/repos/{owner}/{repo}/releases", locals())
@@ -1051,12 +1089,12 @@ def edit_release(
     owner: str,
     repo: str,
     release_id: int,
-    tag_name: Optional[str] = None,
-    target_commitish: Optional[str] = None,
-    name: Optional[str] = None,
-    body: Optional[str] = None,
-    draft: Optional[bool] = None,
-    prerelease: Optional[bool] = None,
+    tag_name: Annotated[Optional[str], Field(description="Replace the release's git tag name.")] = None,
+    target_commitish: Annotated[Optional[str], Field(description="Branch name OR commit SHA — only honored when (re)creating the tag.")] = None,
+    name: Annotated[Optional[str], Field(description="Replace the release title shown in the UI.")] = None,
+    body: Annotated[Optional[str], Field(description="Replace the release notes / description (markdown).")] = None,
+    draft: Annotated[Optional[bool], Field(description="True = unpublished draft, False = published.")] = None,
+    prerelease: Annotated[Optional[bool], Field(description="True = mark as pre-release (alpha/beta/rc), False = stable.")] = None,
 ):
     """Edit a release."""
     return _call("PATCH", "/repos/{owner}/{repo}/releases/{release_id}", locals())
@@ -1079,7 +1117,7 @@ def create_repo_label(
     owner: str,
     repo: str,
     name: str,
-    color: str,
+    color: Annotated[str, Field(description="Hex color string. Accepted forms: '#rrggbb', '#rgb', or the same without the leading '#' (e.g. '#00ff00', '00ff00', '#0f0').")],
     description: Optional[str] = None,
 ):
     """Create a label in a repository."""
@@ -1091,7 +1129,7 @@ def edit_repo_label(
     repo: str,
     label_id: int,
     name: Optional[str] = None,
-    color: Optional[str] = None,
+    color: Annotated[Optional[str], Field(description="Replacement hex color string. Accepted forms: '#rrggbb', '#rgb', or without the leading '#' (e.g. '#00ff00', '00ff00').")] = None,
     description: Optional[str] = None,
 ):
     """Edit a repository label."""
@@ -1109,7 +1147,7 @@ def delete_repo_label(owner: str, repo: str, label_id: int):
 def list_milestones(
     owner: str,
     repo: str,
-    state: Optional[str] = None,
+    state: Annotated[Optional[Literal["open", "closed", "all"]], Field(description="Filter by milestone state. Defaults to server default ('open').")] = None,
 ):
     """List a repository's milestones. State can be open, closed, or all."""
     params = _body(locals(), exclude=("owner", "repo"))
@@ -1128,8 +1166,8 @@ def create_milestone(
     repo: str,
     title: str,
     description: Optional[str] = None,
-    due_on: Optional[str] = None,
-    state: Optional[str] = None,
+    due_on: Annotated[Optional[str], Field(description="Due date as ISO-8601 timestamp, e.g. '2026-05-20T00:00:00Z'.")] = None,
+    state: Annotated[Optional[Literal["open", "closed"]], Field(description="Initial milestone state. Defaults to 'open'.")] = None,
 ):
     """Create a milestone in a repository."""
     return _call("POST", "/repos/{owner}/{repo}/milestones", locals())
@@ -1141,8 +1179,8 @@ def edit_milestone(
     milestone_id: int,
     title: Optional[str] = None,
     description: Optional[str] = None,
-    due_on: Optional[str] = None,
-    state: Optional[str] = None,
+    due_on: Annotated[Optional[str], Field(description="Replacement due date as ISO-8601 timestamp, e.g. '2026-05-20T00:00:00Z'.")] = None,
+    state: Annotated[Optional[Literal["open", "closed"]], Field(description="New milestone state.")] = None,
 ):
     """Edit a milestone."""
     return _call("PATCH", "/repos/{owner}/{repo}/milestones/{milestone_id}", locals())
@@ -1159,14 +1197,19 @@ def delete_milestone(owner: str, repo: str, milestone_id: int):
 def list_issues(
     owner: str,
     repo: str,
-    state: Optional[str] = None,
-    labels: Optional[str] = None,
-    milestone: Optional[str] = None,
-    assignee: Optional[str] = None,
-    type: Optional[str] = None,
+    state: Annotated[Optional[Literal["open", "closed", "all"]], Field(description="Filter by issue state. Defaults to server default ('open').")] = None,
+    labels: Annotated[Optional[str], Field(description=(
+        "Filter by label NAMES (Gitea API quirk: read filter takes names, "
+        "write ops take label IDs). Comma-separated, e.g. 'bug,frontend'. "
+        "For write ops (create_issue, edit_issue, add_issue_labels, "
+        "replace_issue_labels) use integer IDs from list_repo_labels."
+    ))] = None,
+    milestone: Annotated[Optional[str], Field(description="Filter by milestone name OR comma-separated names. Use list_milestones to enumerate.")] = None,
+    assignee: Annotated[Optional[str], Field(description="Filter by assignee USERNAME (not user ID).")] = None,
+    type: Annotated[Optional[Literal["issues", "pulls"]], Field(description="'issues' = exclude PRs, 'pulls' = only PRs. Omit to include both.")] = None,
     page: Optional[int] = None,
     limit: Optional[int] = 20,
-    brief: bool = True,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea issue objects.")] = True,
 ):
     """List issues in a repository. Type can be 'issues' or 'pulls'.
 
@@ -1195,14 +1238,17 @@ def list_issues(
 
 @_op(gitea_read)
 def search_issues(
-    query: str,
-    owner: Optional[str] = None,
-    state: Optional[str] = None,
-    labels: Optional[str] = None,
-    type: Optional[str] = None,
+    query: Annotated[str, Field(description="Keyword to match against issue title/body.")],
+    owner: Annotated[Optional[str], Field(description="Scope search to a specific owner (username or org).")] = None,
+    state: Annotated[Optional[Literal["open", "closed", "all"]], Field(description="Filter by issue state. Defaults to server default.")] = None,
+    labels: Annotated[Optional[str], Field(description=(
+        "Filter by label NAMES (read filter takes names; write ops take "
+        "label IDs). Comma-separated, e.g. 'bug,frontend'."
+    ))] = None,
+    type: Annotated[Optional[Literal["issues", "pulls"]], Field(description="'issues' = exclude PRs, 'pulls' = only PRs. Omit to include both.")] = None,
     limit: Optional[int] = 20,
     page: Optional[int] = None,
-    brief: bool = True,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea issue objects.")] = True,
 ):
     """Search issues across repositories.
 
@@ -1240,10 +1286,14 @@ def create_issue(
     owner: str,
     repo: str,
     title: str,
-    body: Optional[str] = None,
-    assignees: Optional[list[str]] = None,
-    milestone_id: Optional[int] = None,
-    labels: Optional[list[int]] = None,
+    body: Annotated[Optional[str], Field(description="Issue body as markdown. MUST include a <brief>short summary</brief> tag (enforced) for list views.")] = None,
+    assignees: Annotated[Optional[list[str]], Field(description="List of USERNAMES to assign (NOT user IDs / NOT display names).")] = None,
+    milestone_id: Annotated[Optional[int], Field(description="Milestone integer ID from list_milestones (NOT the milestone title).")] = None,
+    labels: Annotated[Optional[list[int]], Field(description=(
+        "Label IDs (int64) from list_repo_labels — NOT names. "
+        "Calling list_repo_labels first to look up IDs is required. "
+        "Passing names like ['frontend'] returns 422 from Gitea."
+    ))] = None,
 ):
     """Create an issue in a repository. Body must include <brief>summary</brief> tag."""
     _validate_brief(body)
@@ -1255,12 +1305,16 @@ def edit_issue(
     repo: str,
     index: int,
     title: Optional[str] = None,
-    body: Optional[str] = None,
-    state: Optional[str] = None,
-    assignees: Optional[list[str]] = None,
-    milestone: Optional[int] = None,
-    labels: Optional[list[int]] = None,
-    due_date: Optional[str] = None,
+    body: Annotated[Optional[str], Field(description="New issue body as markdown. If provided, MUST include a <brief>short summary</brief> tag (enforced).")] = None,
+    state: Annotated[Optional[Literal["open", "closed"]], Field(description="Change issue state.")] = None,
+    assignees: Annotated[Optional[list[str]], Field(description="Replacement list of assignee USERNAMES (NOT user IDs / NOT display names).")] = None,
+    milestone: Annotated[Optional[int], Field(description="Milestone integer ID from list_milestones (NOT the milestone title). Pass 0 to clear.")] = None,
+    labels: Annotated[Optional[list[int]], Field(description=(
+        "Label IDs (int64) from list_repo_labels — NOT names. "
+        "Calling list_repo_labels first to look up IDs is required. "
+        "Passing names like ['frontend'] returns 422 from Gitea."
+    ))] = None,
+    due_date: Annotated[Optional[str], Field(description="ISO-8601 timestamp, e.g. '2026-05-20T00:00:00Z'.")] = None,
 ):
     """Edit an issue. State can be 'open' or 'closed'. Body must include <brief>summary</brief> tag."""
     if body is not None:
@@ -1268,7 +1322,12 @@ def edit_issue(
     return _call("PATCH", "/repos/{owner}/{repo}/issues/{index}", locals())
 
 @_op(gitea_read)
-def list_issue_comments(owner: str, repo: str, index: int, brief: bool = True):
+def list_issue_comments(
+    owner: str,
+    repo: str,
+    index: int,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea comment objects.")] = True,
+):
     """List comments on an issue.
 
     brief (default True): compact view — id, user login, body, timestamps.
@@ -1279,7 +1338,12 @@ def list_issue_comments(owner: str, repo: str, index: int, brief: bool = True):
     return _ok(data)
 
 @_op(gitea_create)
-def create_issue_comment(owner: str, repo: str, index: int, body: str):
+def create_issue_comment(
+    owner: str,
+    repo: str,
+    index: int,
+    body: Annotated[str, Field(description="Comment body as markdown text.")],
+):
     """Create a comment on an issue."""
     return _ok(
         _get_client().post(
@@ -1288,7 +1352,12 @@ def create_issue_comment(owner: str, repo: str, index: int, body: str):
     )
 
 @_op(gitea_update)
-def edit_issue_comment(owner: str, repo: str, comment_id: int, body: str):
+def edit_issue_comment(
+    owner: str,
+    repo: str,
+    comment_id: int,
+    body: Annotated[str, Field(description="Replacement comment body as markdown text.")],
+):
     """Edit a comment on an issue."""
     return _ok(
         _get_client().patch(
@@ -1307,7 +1376,16 @@ def list_issue_labels(owner: str, repo: str, index: int):
     return _call("GET", "/repos/{owner}/{repo}/issues/{index}/labels", locals())
 
 @_op(gitea_create)
-def add_issue_labels(owner: str, repo: str, index: int, labels: list[int]):
+def add_issue_labels(
+    owner: str,
+    repo: str,
+    index: int,
+    labels: Annotated[list[int], Field(description=(
+        "Label IDs (int64) from list_repo_labels — NOT names. "
+        "Calling list_repo_labels first to look up IDs is required. "
+        "Passing names like ['frontend'] returns 422 from Gitea."
+    ))],
+):
     """Add labels to an issue."""
     return _ok(
         _get_client().post(
@@ -1322,7 +1400,14 @@ def remove_issue_label(owner: str, repo: str, index: int, label_id: int):
 
 @_op(gitea_update)
 def replace_issue_labels(
-    owner: str, repo: str, index: int, labels: list[int]
+    owner: str,
+    repo: str,
+    index: int,
+    labels: Annotated[list[int], Field(description=(
+        "Replacement set of label IDs (int64) from list_repo_labels — NOT names. "
+        "Calling list_repo_labels first to look up IDs is required. "
+        "Passing names like ['frontend'] returns 422 from Gitea."
+    ))],
 ):
     """Replace all labels on an issue."""
     return _ok(
@@ -1332,7 +1417,12 @@ def replace_issue_labels(
     )
 
 @_op(gitea_create)
-def set_issue_deadline(owner: str, repo: str, index: int, due_date: str):
+def set_issue_deadline(
+    owner: str,
+    repo: str,
+    index: int,
+    due_date: Annotated[str, Field(description="ISO-8601 timestamp, e.g. '2026-05-20T00:00:00Z'.")],
+):
     """Set a deadline on an issue. due_date should be in ISO 8601 format."""
     return _ok(
         _get_client().post(
@@ -1362,9 +1452,9 @@ def get_issue_timeline(owner: str, repo: str, index: int):
 def list_repo_issue_comments(
     owner: str,
     repo: str,
-    since: Optional[str] = None,
-    before: Optional[str] = None,
-    brief: bool = True,
+    since: Annotated[Optional[str], Field(description="Only return comments updated at/after this ISO-8601 timestamp, e.g. '2026-05-20T00:00:00Z'.")] = None,
+    before: Annotated[Optional[str], Field(description="Only return comments updated at/before this ISO-8601 timestamp, e.g. '2026-05-20T00:00:00Z'.")] = None,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea comment objects.")] = True,
 ):
     """List all comments in a repository (across all issues).
 
@@ -1393,14 +1483,28 @@ def list_issue_dependencies(owner: str, repo: str, index: int):
 
 @_op(gitea_create)
 def add_issue_dependency(
-    owner: str, repo: str, index: int, depends_on_id: int
+    owner: str,
+    repo: str,
+    index: int,
+    depends_on_id: Annotated[int, Field(description=(
+        "Issue index of the dependency in the SAME repo (the per-repo "
+        "issue number, NOT a global issue ID). The issue at `index` will "
+        "depend on issue #depends_on_id."
+    ))],
 ):
     """Add a dependency to an issue. depends_on_id is the index of the dependency issue."""
     return _call("POST", "/repos/{owner}/{repo}/issues/{index}/dependencies", locals(), rename={"depends_on_id": "id"})
 
 @_op(gitea_delete)
 def remove_issue_dependency(
-    owner: str, repo: str, index: int, depends_on_id: int
+    owner: str,
+    repo: str,
+    index: int,
+    depends_on_id: Annotated[int, Field(description=(
+        "Issue index of the dependency in the SAME repo (per-repo issue "
+        "number, NOT a global issue ID). Removes the dependency edge from "
+        "issue #index to issue #depends_on_id."
+    ))],
 ):
     """Remove a dependency from an issue."""
     return _ok(
@@ -1459,12 +1563,28 @@ def list_issue_reactions(owner: str, repo: str, index: int):
     return _call("GET", "/repos/{owner}/{repo}/issues/{index}/reactions", locals())
 
 @_op(gitea_create)
-def add_issue_reaction(owner: str, repo: str, index: int, reaction: str):
+def add_issue_reaction(
+    owner: str,
+    repo: str,
+    index: int,
+    reaction: Annotated[
+        Literal["+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"],
+        Field(description="Emoji reaction key (GitHub-compatible set)."),
+    ],
+):
     """Add a reaction to an issue. Reaction can be: +1, -1, laugh, confused, heart, hooray, rocket, eyes."""
     return _call("POST", "/repos/{owner}/{repo}/issues/{index}/reactions", locals(), rename={"reaction": "content"})
 
 @_op(gitea_delete)
-def remove_issue_reaction(owner: str, repo: str, index: int, reaction: str):
+def remove_issue_reaction(
+    owner: str,
+    repo: str,
+    index: int,
+    reaction: Annotated[
+        Literal["+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"],
+        Field(description="Emoji reaction key to remove (must match the previously-added reaction)."),
+    ],
+):
     """Remove a reaction from an issue."""
     return _ok(
         _get_client()._json(
@@ -1481,14 +1601,26 @@ def list_comment_reactions(owner: str, repo: str, comment_id: int):
 
 @_op(gitea_create)
 def add_comment_reaction(
-    owner: str, repo: str, comment_id: int, reaction: str
+    owner: str,
+    repo: str,
+    comment_id: int,
+    reaction: Annotated[
+        Literal["+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"],
+        Field(description="Emoji reaction key (GitHub-compatible set)."),
+    ],
 ):
     """Add a reaction to a comment. Reaction can be: +1, -1, laugh, confused, heart, hooray, rocket, eyes."""
     return _call("POST", "/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions", locals(), rename={"reaction": "content"})
 
 @_op(gitea_delete)
 def remove_comment_reaction(
-    owner: str, repo: str, comment_id: int, reaction: str
+    owner: str,
+    repo: str,
+    comment_id: int,
+    reaction: Annotated[
+        Literal["+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"],
+        Field(description="Emoji reaction key to remove (must match the previously-added reaction)."),
+    ],
 ):
     """Remove a reaction from a comment."""
     return _ok(
@@ -1514,9 +1646,9 @@ def add_tracked_time(
     owner: str,
     repo: str,
     index: int,
-    time: int,
-    user_name: Optional[str] = None,
-    created: Optional[str] = None,
+    time: Annotated[int, Field(description="Tracked duration in SECONDS (integer). E.g. 3600 = 1 hour.")],
+    user_name: Annotated[Optional[str], Field(description="USERNAME to attribute the entry to. Defaults to the authenticated user. Admin-only when set to another user.")] = None,
+    created: Annotated[Optional[str], Field(description="ISO-8601 timestamp for when the work happened, e.g. '2026-05-20T00:00:00Z'. Defaults to now.")] = None,
 ):
     """Add tracked time to an issue. Time is in seconds."""
     return _call("POST", "/repos/{owner}/{repo}/issues/{index}/times", locals())
@@ -1547,11 +1679,14 @@ def stop_stopwatch(owner: str, repo: str, index: int):
 def list_pull_requests(
     owner: str,
     repo: str,
-    state: Optional[str] = None,
-    sort: Optional[str] = None,
-    milestone: Optional[int] = None,
-    labels: Optional[list[int]] = None,
-    brief: bool = True,
+    state: Annotated[Optional[Literal["open", "closed", "all"]], Field(description="Filter by PR state. Defaults to server default ('open').")] = None,
+    sort: Annotated[Optional[Literal["newest", "oldest", "recentupdate", "leastupdate", "mostcomment", "leastcomment", "priority"]], Field(description="Sort order for results.")] = None,
+    milestone: Annotated[Optional[int], Field(description="Milestone integer ID from list_milestones (NOT the milestone title).")] = None,
+    labels: Annotated[Optional[list[int]], Field(description=(
+        "Label IDs (int64) from list_repo_labels — NOT names. "
+        "Calling list_repo_labels first to look up IDs is required."
+    ))] = None,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea PR objects.")] = True,
 ):
     """List pull requests in a repository.
 
@@ -1577,13 +1712,17 @@ def get_pull_request(owner: str, repo: str, index: int):
 def create_pull_request(
     owner: str,
     repo: str,
-    title: str,
-    head: str,
-    base: str,
-    body: Optional[str] = None,
-    assignees: Optional[list[str]] = None,
-    milestone_id: Optional[int] = None,
-    labels: Optional[list[int]] = None,
+    title: Annotated[str, Field(description="PR title shown in the UI and notifications.")],
+    head: Annotated[str, Field(description="Source branch — where the changes live. For cross-repo PRs use 'forkOwner:branch' (e.g. 'alice:feature-x').")],
+    base: Annotated[str, Field(description="Target branch — where to merge into (typically the default branch, e.g. 'main').")],
+    body: Annotated[Optional[str], Field(description="PR description as markdown.")] = None,
+    assignees: Annotated[Optional[list[str]], Field(description="List of USERNAMES to assign (NOT user IDs / NOT display names).")] = None,
+    milestone_id: Annotated[Optional[int], Field(description="Milestone integer ID from list_milestones (NOT the milestone title).")] = None,
+    labels: Annotated[Optional[list[int]], Field(description=(
+        "Label IDs (int64) from list_repo_labels — NOT names. "
+        "Calling list_repo_labels first to look up IDs is required. "
+        "Passing names like ['frontend'] returns 422 from Gitea."
+    ))] = None,
 ):
     """Create a pull request."""
     return _call("POST", "/repos/{owner}/{repo}/pulls", locals(), rename={"milestone_id": "milestone"})
@@ -1593,13 +1732,17 @@ def edit_pull_request(
     owner: str,
     repo: str,
     index: int,
-    title: Optional[str] = None,
-    body: Optional[str] = None,
-    state: Optional[str] = None,
-    base: Optional[str] = None,
-    assignees: Optional[list[str]] = None,
-    milestone: Optional[int] = None,
-    labels: Optional[list[int]] = None,
+    title: Annotated[Optional[str], Field(description="New PR title.")] = None,
+    body: Annotated[Optional[str], Field(description="New PR description as markdown.")] = None,
+    state: Annotated[Optional[Literal["open", "closed"]], Field(description="Change PR state. Use 'closed' to close without merging.")] = None,
+    base: Annotated[Optional[str], Field(description="Retarget the PR — name of the new base branch to merge into.")] = None,
+    assignees: Annotated[Optional[list[str]], Field(description="Replacement list of assignee USERNAMES (NOT user IDs / NOT display names).")] = None,
+    milestone: Annotated[Optional[int], Field(description="Milestone integer ID from list_milestones (NOT the milestone title). Pass 0 to clear.")] = None,
+    labels: Annotated[Optional[list[int]], Field(description=(
+        "Label IDs (int64) from list_repo_labels — NOT names. "
+        "Calling list_repo_labels first to look up IDs is required. "
+        "Passing names like ['frontend'] returns 422 from Gitea."
+    ))] = None,
 ):
     """Edit a pull request."""
     return _call("PATCH", "/repos/{owner}/{repo}/pulls/{index}", locals())
@@ -1609,9 +1752,18 @@ def merge_pull_request(
     owner: str,
     repo: str,
     index: int,
-    merge_type: str = "merge",
-    merge_message: Optional[str] = None,
-    delete_branch_after_merge: Optional[bool] = None,
+    merge_type: Annotated[
+        Literal["merge", "rebase", "rebase-merge", "squash", "fast-forward-only"],
+        Field(description=(
+            "How to merge. 'merge' keeps history with a merge commit; "
+            "'rebase' replays commits onto base with no merge commit; "
+            "'rebase-merge' rebases then adds a merge commit; "
+            "'squash' collapses all commits into one on base; "
+            "'fast-forward-only' refuses unless base can fast-forward to head."
+        )),
+    ] = "merge",
+    merge_message: Annotated[Optional[str], Field(description="Override the body of the resulting merge/squash commit message. Sent as `merge_message_field` to the API.")] = None,
+    delete_branch_after_merge: Annotated[Optional[bool], Field(description="If True, delete the head branch after a successful merge.")] = None,
 ):
     """Merge a pull request. merge_type can be: merge, rebase, rebase-merge, squash, fast-forward-only."""
     return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/merge", locals(), rename={"merge_type": "Do", "merge_message": "merge_message_field"})
@@ -1640,7 +1792,7 @@ def update_pull_request_branch(
     owner: str,
     repo: str,
     index: int,
-    style: Optional[str] = None,
+    style: Annotated[Optional[Literal["merge", "rebase"]], Field(description="How to sync the PR head branch with its base. 'merge' (default) merges base into head; 'rebase' rewrites head on top of base.")] = None,
 ):
     """Update a pull request branch. Style can be 'merge' or 'rebase'."""
     return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/update", locals())
@@ -1657,9 +1809,15 @@ def create_pull_review(
     owner: str,
     repo: str,
     index: int,
-    body: Optional[str] = None,
-    event: Optional[str] = None,
-    comments: Optional[list[dict]] = None,
+    body: Annotated[Optional[str], Field(description="Overall review summary as markdown text.")] = None,
+    event: Annotated[Optional[Literal["APPROVED", "REQUEST_CHANGES", "COMMENT", "PENDING"]], Field(description="Review verdict. 'APPROVED' = approve; 'REQUEST_CHANGES' = block; 'COMMENT' = comment only; 'PENDING' = save as draft (submit later via submit_pull_review).")] = None,
+    comments: Annotated[Optional[list[dict]], Field(description=(
+        "Inline file comments. Each item is a dict with keys: "
+        "`path` (file path relative to repo root), `body` (comment text), "
+        "`old_position` (line number in old file or null), "
+        "`new_position` (line number in new file or null). "
+        "Use old_position for removed lines, new_position for added/context lines."
+    ))] = None,
 ):
     """Create a review on a pull request. Event can be: APPROVED, REQUEST_CHANGES, COMMENT, PENDING."""
     return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/reviews", locals())
@@ -1670,15 +1828,18 @@ def submit_pull_review(
     repo: str,
     index: int,
     review_id: int,
-    body: Optional[str] = None,
-    event: Optional[str] = None,
+    body: Annotated[Optional[str], Field(description="Optional summary text to attach when submitting the review.")] = None,
+    event: Annotated[Optional[Literal["APPROVED", "REQUEST_CHANGES", "COMMENT", "PENDING"]], Field(description="Final verdict for the pending review. 'APPROVED' = approve; 'REQUEST_CHANGES' = block; 'COMMENT' = comment only; 'PENDING' keeps it draft.")] = None,
 ):
     """Submit a pending pull request review."""
     return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}", locals())
 
 @_op(gitea_create)
 def request_pull_reviewers(
-    owner: str, repo: str, index: int, reviewers: list[str]
+    owner: str,
+    repo: str,
+    index: int,
+    reviewers: Annotated[list[str], Field(description="List of reviewer USERNAMES (NOT user IDs / NOT display names / NOT team names).")],
 ):
     """Request reviewers for a pull request."""
     return _ok(
@@ -1694,7 +1855,7 @@ def dismiss_pull_review(
     repo: str,
     index: int,
     review_id: int,
-    message: Optional[str] = None,
+    message: Annotated[Optional[str], Field(description="Explanation shown alongside the dismissed review (why it was dismissed).")] = None,
 ):
     """Dismiss a pull request review."""
     return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}/dismissals", locals())
@@ -1718,9 +1879,9 @@ def get_workflow(owner: str, repo: str, workflow_id: str):
 def dispatch_workflow(
     owner: str,
     repo: str,
-    workflow_id: str,
-    ref: str,
-    inputs: Optional[dict] = None,
+    workflow_id: Annotated[str, Field(description="Workflow file name under .gitea/workflows/ (e.g. 'ci.yml') or its numeric ID. The workflow must declare `on: workflow_dispatch`.")],
+    ref: Annotated[str, Field(description="Branch name, tag name, or commit SHA to run the workflow against (e.g. 'main', 'v1.2.0').")],
+    inputs: Annotated[Optional[dict], Field(description="Values for the workflow's `workflow_dispatch.inputs` — string keys (input names) → string values. Keys must match what the workflow file declares.")] = None,
 ):
     """Dispatch a workflow run."""
     body: dict = {"ref": ref, "inputs": inputs or {}}
@@ -1735,9 +1896,9 @@ def dispatch_workflow(
 def list_workflow_runs(
     owner: str,
     repo: str,
-    limit: Optional[int] = 20,
-    page: Optional[int] = 1,
-    brief: bool = True,
+    limit: Annotated[Optional[int], Field(description="Page size. Server default if omitted.")] = 20,
+    page: Annotated[Optional[int], Field(description="1-based page number.")] = 1,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-run objects.")] = True,
 ):
     """List workflow runs for a repository.
 
@@ -1772,8 +1933,8 @@ def get_workflow_job_logs(
     owner: str,
     repo: str,
     job_id: int,
-    tail: Optional[int] = 200,
-    filter: Optional[str] = None,
+    tail: Annotated[Optional[int], Field(description="Return only the last N lines of log output. Set to 0 (or null) for the full log.")] = 200,
+    filter: Annotated[Optional[str], Field(description="Case-insensitive Python regex; only matching log lines are kept (e.g. 'error|fail|fatal'). Applied before `tail`.")] = None,
 ):
     """Get logs for a workflow job.
 
@@ -1799,7 +1960,12 @@ def list_action_secrets(owner: str, repo: str):
     )
 
 @_op(gitea_update)
-def create_action_secret(owner: str, repo: str, secret_name: str, data: str):
+def create_action_secret(
+    owner: str,
+    repo: str,
+    secret_name: Annotated[str, Field(description="Secret name as referenced from workflows via ${{ secrets.NAME }} (uppercase recommended).")],
+    data: Annotated[str, Field(description="Secret PLAINTEXT value — Gitea encrypts it at rest. Send raw, do not pre-encode/base64.")],
+):
     """Create or update an action secret in a repository."""
     return _ok(
         _get_client().put(
@@ -1833,7 +1999,10 @@ def get_action_variable(owner: str, repo: str, variable_name: str):
 
 @_op(gitea_create)
 def create_action_variable(
-    owner: str, repo: str, variable_name: str, value: str
+    owner: str,
+    repo: str,
+    variable_name: Annotated[str, Field(description="Variable name as referenced from workflows via ${{ vars.NAME }} (uppercase recommended).")],
+    value: Annotated[str, Field(description="Variable value (plaintext — visible to workflow logs; use create_action_secret for sensitive data).")],
 ):
     """Create an action variable in a repository."""
     return _ok(
@@ -1845,7 +2014,10 @@ def create_action_variable(
 
 @_op(gitea_update)
 def update_action_variable(
-    owner: str, repo: str, variable_name: str, value: str
+    owner: str,
+    repo: str,
+    variable_name: Annotated[str, Field(description="Variable name to update (must already exist).")],
+    value: Annotated[str, Field(description="New variable value (plaintext — visible to workflow logs).")],
 ):
     """Update an action variable in a repository."""
     return _ok(
@@ -1879,11 +2051,11 @@ def get_org(org: str):
 
 @_op(gitea_create)
 def create_org(
-    username: str,
+    username: Annotated[str, Field(description="Organization login (the org's short name / URL slug). Not an existing user — this names the new org.")],
     full_name: Optional[str] = None,
     description: Optional[str] = None,
     website: Optional[str] = None,
-    visibility: Optional[str] = None,
+    visibility: Annotated[Optional[Literal["public", "limited", "private"]], Field(description="Visibility level: public (anyone), limited (logged-in users), private (members only).")] = None,
 ):
     """Create an organization."""
     visibility = _enforce_visibility(visibility)
@@ -1895,7 +2067,7 @@ def edit_org(
     full_name: Optional[str] = None,
     description: Optional[str] = None,
     website: Optional[str] = None,
-    visibility: Optional[str] = None,
+    visibility: Annotated[Optional[Literal["public", "limited", "private"]], Field(description="Visibility level: public (anyone), limited (logged-in users), private (members only).")] = None,
 ):
     """Edit an organization's properties."""
     visibility = _enforce_visibility(visibility)
@@ -1907,7 +2079,10 @@ def delete_org(org: str):
     return _ok(_get_client().delete(f"/orgs/{org}"))
 
 @_op(gitea_read)
-def list_org_repos(org: str, brief: bool = True):
+def list_org_repos(
+    org: str,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea repo objects.")] = True,
+):
     """List repositories in an organization.
 
     brief (default True): compact view. Set brief=False for full objects."""
@@ -1954,14 +2129,14 @@ def remove_org_public_member(org: str, username: str):
 @_op(gitea_create)
 def create_org_repo(
     org: str,
-    name: str,
+    name: Annotated[str, Field(description="Repository slug (URL-safe short name).")],
     description: Optional[str] = None,
-    private: Optional[bool] = None,
-    auto_init: Optional[bool] = None,
-    gitignores: Optional[str] = None,
-    license: Optional[str] = None,
-    readme: Optional[str] = None,
-    default_branch: Optional[str] = None,
+    private: Annotated[Optional[bool], Field(description="True = private repo. Public repos are blocked unless the server was started with --allow-public.")] = None,
+    auto_init: Annotated[Optional[bool], Field(description="True = create an initial commit (README/license/gitignore based on the fields below).")] = None,
+    gitignores: Annotated[Optional[str], Field(description="Comma-separated .gitignore template names (e.g. 'Python,Node').")] = None,
+    license: Annotated[Optional[str], Field(description="License template name (e.g. 'MIT', 'Apache-2.0').")] = None,
+    readme: Annotated[Optional[str], Field(description="README template name (e.g. 'Default').")] = None,
+    default_branch: Annotated[Optional[str], Field(description="Default branch name for the new repo (e.g. 'main').")] = None,
 ):
     """Create a repository in an organization."""
     private = _enforce_private(private)
@@ -1988,9 +2163,14 @@ def get_team(team_id: int):
 @_op(gitea_create)
 def create_team(
     org: str,
-    name: str,
-    permission: Optional[str] = None,
-    units: Optional[list[str]] = None,
+    name: Annotated[str, Field(description="Team name (unique within the org).")],
+    permission: Annotated[Optional[Literal["none", "read", "write", "admin", "owner"]], Field(description="Access level granted to team members on the team's repos.")] = None,
+    units: Annotated[Optional[list[str]], Field(description=(
+        "Repo features this team can access. Each value is a unit key: "
+        "'repo.code', 'repo.issues', 'repo.pulls', 'repo.releases', "
+        "'repo.wiki', 'repo.ext_wiki', 'repo.ext_issues', 'repo.projects', "
+        "'repo.packages', 'repo.actions'. Omit for Gitea default set."
+    ))] = None,
     description: Optional[str] = None,
 ):
     """Create a team in an organization. Permission can be: read, write, admin. Units are like: repo.code, repo.issues, repo.pulls."""
@@ -2001,8 +2181,13 @@ def edit_team(
     team_id: int,
     name: Optional[str] = None,
     description: Optional[str] = None,
-    permission: Optional[str] = None,
-    units: Optional[list[str]] = None,
+    permission: Annotated[Optional[Literal["none", "read", "write", "admin", "owner"]], Field(description="Access level granted to team members on the team's repos.")] = None,
+    units: Annotated[Optional[list[str]], Field(description=(
+        "Repo features this team can access. Each value is a unit key: "
+        "'repo.code', 'repo.issues', 'repo.pulls', 'repo.releases', "
+        "'repo.wiki', 'repo.ext_wiki', 'repo.ext_issues', 'repo.projects', "
+        "'repo.packages', 'repo.actions'."
+    ))] = None,
 ):
     """Edit a team's properties."""
     return _call("PATCH", "/teams/{team_id}", locals())
@@ -2058,8 +2243,8 @@ def list_org_labels(org: str):
 @_op(gitea_create)
 def create_org_label(
     org: str,
-    name: str,
-    color: str,
+    name: Annotated[str, Field(description="Label name (unique within the org).")],
+    color: Annotated[str, Field(description="Hex color, e.g. '#00ff00' or '00ff00'.")],
     description: Optional[str] = None,
 ):
     """Create a label in an organization."""
@@ -2070,7 +2255,7 @@ def edit_org_label(
     org: str,
     label_id: int,
     name: Optional[str] = None,
-    color: Optional[str] = None,
+    color: Annotated[Optional[str], Field(description="Hex color, e.g. '#00ff00' or '00ff00'.")] = None,
     description: Optional[str] = None,
 ):
     """Edit an organization label."""
@@ -2086,10 +2271,10 @@ def delete_org_label(org: str, label_id: int):
 
 @_op(gitea_read)
 def list_notifications(
-    all: Optional[bool] = None,
-    status_types: Optional[list[str]] = None,
-    subject_type: Optional[str] = None,
-    brief: bool = True,
+    all: Annotated[Optional[bool], Field(description="True = include already-read notifications. False/omitted (default) = unread only.")] = None,
+    status_types: Annotated[Optional[list[Literal["unread", "read", "pinned"]]], Field(description="Filter by status. Defaults to ['unread', 'pinned'] server-side.")] = None,
+    subject_type: Annotated[Optional[list[Literal["Issue", "Pull", "Commit", "Repository"]]], Field(description="Filter by notification subject type.")] = None,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view (id, repo, subject type/title, unread, updated_at); False = full Gitea notification objects.")] = True,
 ):
     """List notifications for the current user.
 
@@ -2106,7 +2291,9 @@ def list_notifications(
     return _ok(data)
 
 @_op(gitea_update)
-def mark_notifications_read(last_read_at: Optional[str] = None):
+def mark_notifications_read(
+    last_read_at: Annotated[Optional[str], Field(description="ISO-8601 timestamp (e.g. '2026-05-20T12:00:00Z'). Notifications updated at or before this time are marked read. Defaults to now.")] = None,
+):
     """Mark all notifications as read."""
     return _call("PUT", "/notifications", locals())
 
@@ -2124,9 +2311,9 @@ def mark_notification_read(thread_id: int):
 def list_repo_notifications(
     owner: str,
     repo: str,
-    all: Optional[bool] = None,
-    status_types: Optional[list[str]] = None,
-    brief: bool = True,
+    all: Annotated[Optional[bool], Field(description="True = include already-read notifications. False/omitted (default) = unread only.")] = None,
+    status_types: Annotated[Optional[list[Literal["unread", "read", "pinned"]]], Field(description="Filter by status. Defaults to ['unread', 'pinned'] server-side.")] = None,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea notification objects.")] = True,
 ):
     """List notifications for a repository.
 
@@ -2147,7 +2334,7 @@ def list_repo_notifications(
 def mark_repo_notifications_read(
     owner: str,
     repo: str,
-    last_read_at: Optional[str] = None,
+    last_read_at: Annotated[Optional[str], Field(description="ISO-8601 timestamp (e.g. '2026-05-20T12:00:00Z'). Notifications updated at or before this time are marked read. Defaults to now.")] = None,
 ):
     """Mark all notifications in a repository as read."""
     return _call("PUT", "/repos/{owner}/{repo}/notifications", locals())
@@ -2174,9 +2361,9 @@ def get_wiki_page(owner: str, repo: str, page_name: str):
 def create_wiki_page(
     owner: str,
     repo: str,
-    title: str,
-    content: str,
-    message: Optional[str] = None,
+    title: Annotated[str, Field(description="Wiki page title. Used as the page's display name and slug source.")],
+    content: Annotated[str, Field(description="Page body as PLAINTEXT (typically Markdown). The tool base64-encodes it for the API — do NOT pre-encode.")],
+    message: Annotated[Optional[str], Field(description="Git commit message for the wiki commit. Defaults to a Gitea-generated message if omitted.")] = None,
 ):
     """Create a new wiki page. Content is provided as plain text and will be base64-encoded automatically."""
     encoded = base64.b64encode(content.encode()).decode()
@@ -2192,9 +2379,9 @@ def edit_wiki_page(
     owner: str,
     repo: str,
     page_name: str,
-    title: Optional[str] = None,
-    content: Optional[str] = None,
-    message: Optional[str] = None,
+    title: Annotated[Optional[str], Field(description="New wiki page title. Omit to keep the existing title.")] = None,
+    content: Annotated[Optional[str], Field(description="Replacement page body as PLAINTEXT (typically Markdown). The tool base64-encodes it for the API — do NOT pre-encode.")] = None,
+    message: Annotated[Optional[str], Field(description="Git commit message for the wiki commit. Defaults to a Gitea-generated message if omitted.")] = None,
 ):
     """Edit a wiki page. Content is provided as plain text and will be base64-encoded automatically."""
     body = _body(locals(), exclude=("owner", "repo", "page_name", "content"))
@@ -2219,7 +2406,7 @@ def delete_wiki_page(owner: str, repo: str, page_name: str):
 @_op(gitea_read)
 def list_packages(
     owner: str,
-    type: Optional[str] = None,
+    type: Annotated[Optional[Literal["alpine", "arch", "cargo", "chef", "composer", "conan", "conda", "container", "cran", "debian", "generic", "go", "helm", "maven", "npm", "nuget", "pub", "pypi", "rpm", "rubygems", "swift", "vagrant"]], Field(description="Filter by Gitea package registry type. Omit to list all package types for the owner.")] = None,
 ):
     """List packages for an owner. Type can filter by package type."""
     params = _body(locals(), exclude=("owner",))
@@ -2228,21 +2415,36 @@ def list_packages(
     )
 
 @_op(gitea_read)
-def get_package(owner: str, type: str, name: str, version: str):
+def get_package(
+    owner: str,
+    type: Annotated[Literal["alpine", "arch", "cargo", "chef", "composer", "conan", "conda", "container", "cran", "debian", "generic", "go", "helm", "maven", "npm", "nuget", "pub", "pypi", "rpm", "rubygems", "swift", "vagrant"], Field(description="Gitea package registry type (the package format).")],
+    name: Annotated[str, Field(description="Package name as registered (format depends on type: e.g. 'mypkg' for npm/pypi, 'group:artifact' for maven, 'image' for container).")],
+    version: Annotated[str, Field(description="Package version string as registered (e.g. '1.2.3', 'v0.5.0', container tag 'latest').")],
+):
     """Get a package by type, name, and version."""
     return _ok(
         _get_client().get(f"/packages/{owner}/{type}/{name}/{version}")
     )
 
 @_op(gitea_delete)
-def delete_package(owner: str, type: str, name: str, version: str):
+def delete_package(
+    owner: str,
+    type: Annotated[Literal["alpine", "arch", "cargo", "chef", "composer", "conan", "conda", "container", "cran", "debian", "generic", "go", "helm", "maven", "npm", "nuget", "pub", "pypi", "rpm", "rubygems", "swift", "vagrant"], Field(description="Gitea package registry type (the package format).")],
+    name: Annotated[str, Field(description="Package name as registered (format depends on type).")],
+    version: Annotated[str, Field(description="Package version string to delete.")],
+):
     """Delete a package."""
     return _ok(
         _get_client().delete(f"/packages/{owner}/{type}/{name}/{version}")
     )
 
 @_op(gitea_read)
-def list_package_files(owner: str, type: str, name: str, version: str):
+def list_package_files(
+    owner: str,
+    type: Annotated[Literal["alpine", "arch", "cargo", "chef", "composer", "conan", "conda", "container", "cran", "debian", "generic", "go", "helm", "maven", "npm", "nuget", "pub", "pypi", "rpm", "rubygems", "swift", "vagrant"], Field(description="Gitea package registry type (the package format).")],
+    name: Annotated[str, Field(description="Package name as registered (format depends on type).")],
+    version: Annotated[str, Field(description="Package version whose files should be listed.")],
+):
     """List files in a package."""
     return _ok(
         _get_client().get(f"/packages/{owner}/{type}/{name}/{version}/files")
@@ -2258,12 +2460,12 @@ def admin_list_users():
 
 @_op(gitea_admin_write)
 def admin_create_user(
-    username: str,
-    email: str,
-    password: str,
-    must_change_password: Optional[bool] = None,
-    login_name: Optional[str] = None,
-    send_notify: Optional[bool] = None,
+    username: Annotated[str, Field(description="Login name for the new user (URL slug, unique on the instance).")],
+    email: Annotated[str, Field(description="Primary email address for the new user.")],
+    password: Annotated[str, Field(description="Initial password (subject to Gitea's password policy).")],
+    must_change_password: Annotated[Optional[bool], Field(description="True = force the user to set a new password on first login.")] = None,
+    login_name: Annotated[Optional[str], Field(description="External login name when the account is linked to an auth source. Defaults to `username` for local auth.")] = None,
+    send_notify: Annotated[Optional[bool], Field(description="True = email the new user about their account being created.")] = None,
 ):
     """Create a new user (admin only)."""
     return _call("POST", "/admin/users", locals())
@@ -2271,21 +2473,24 @@ def admin_create_user(
 @_op(gitea_admin_write)
 def admin_edit_user(
     username: str,
-    email: Optional[str] = None,
-    password: Optional[str] = None,
-    must_change_password: Optional[bool] = None,
-    login_name: Optional[str] = None,
-    active: Optional[bool] = None,
-    admin: Optional[bool] = None,
-    allow_git_hook: Optional[bool] = None,
-    max_repo_creation: Optional[int] = None,
-    prohibit_login: Optional[bool] = None,
+    email: Annotated[Optional[str], Field(description="New primary email address.")] = None,
+    password: Annotated[Optional[str], Field(description="New password (subject to Gitea's password policy).")] = None,
+    must_change_password: Annotated[Optional[bool], Field(description="True = require the user to set a new password on next login.")] = None,
+    login_name: Annotated[Optional[str], Field(description="External login name for linked auth sources.")] = None,
+    active: Annotated[Optional[bool], Field(description="False = deactivate the account (cannot log in).")] = None,
+    admin: Annotated[Optional[bool], Field(description="True = grant site-admin privileges; False = revoke.")] = None,
+    allow_git_hook: Annotated[Optional[bool], Field(description="True = allow this user to configure server-side git hooks on their repos.")] = None,
+    max_repo_creation: Annotated[Optional[int], Field(description="Per-user repo creation cap. -1 = unlimited.")] = None,
+    prohibit_login: Annotated[Optional[bool], Field(description="True = block this user from signing in (locks the account without deleting it).")] = None,
 ):
     """Edit a user's properties (admin only)."""
     return _call("PATCH", "/admin/users/{username}", locals())
 
 @_op(gitea_admin_write)
-def admin_delete_user(username: str, purge: bool = False):
+def admin_delete_user(
+    username: str,
+    purge: Annotated[bool, Field(description="True = also delete the user's repositories, packages, and other owned resources. False = refuse deletion if the user still owns content.")] = False,
+):
     """Delete a user (admin only). Set purge=True to also delete owned repos, etc."""
     params: dict = {}
     if purge:
@@ -2303,14 +2508,16 @@ def admin_list_cron_jobs():
     return _ok(_get_client().paginate("/admin/cron"))
 
 @_op(gitea_admin_write)
-def admin_run_cron_job(task_name: str):
+def admin_run_cron_job(
+    task_name: Annotated[str, Field(description="Cron task name as listed by admin_list_cron_jobs (e.g. 'cleanup_hook_task_table', 'sync_external_users', 'repo_health_check').")],
+):
     """Run a cron job by name (admin only)."""
     return _ok(_get_client().post(f"/admin/cron/{task_name}"))
 
 @_op(gitea_admin_read)
 def admin_list_repos(
-    limit: Optional[int] = None,
-    page: Optional[int] = None,
+    limit: Annotated[Optional[int], Field(description="Page size. Server default if omitted.")] = None,
+    page: Annotated[Optional[int], Field(description="1-based page number.")] = None,
 ):
     """List all repositories (admin only)."""
     params = _body(locals())
@@ -2318,12 +2525,12 @@ def admin_list_repos(
 
 @_op(gitea_admin_write)
 def admin_create_org(
-    username: str,
-    owner_name: str,
-    full_name: Optional[str] = None,
+    username: Annotated[str, Field(description="Organization login (the new org's short name / URL slug). Not an existing user.")],
+    owner_name: Annotated[str, Field(description="Existing username that will own the new org.")],
+    full_name: Annotated[Optional[str], Field(description="Display name shown in the UI (free text). Defaults to `username`.")] = None,
     description: Optional[str] = None,
     website: Optional[str] = None,
-    visibility: Optional[str] = None,
+    visibility: Annotated[Optional[Literal["public", "limited", "private"]], Field(description="Visibility level: public (anyone), limited (logged-in users), private (members only).")] = None,
 ):
     """Create an organization (admin only). owner_name is the user who will own the org."""
     visibility = _enforce_visibility(visibility)
@@ -2331,18 +2538,21 @@ def admin_create_org(
 
 @_op(gitea_admin_write)
 def admin_create_repo_for_user(
-    username: str,
-    name: str,
+    username: Annotated[str, Field(description="Existing username that will own the new repo.")],
+    name: Annotated[str, Field(description="Repository slug (URL-safe short name).")],
     description: Optional[str] = None,
-    private: Optional[bool] = None,
-    auto_init: Optional[bool] = None,
+    private: Annotated[Optional[bool], Field(description="True = private repo. Public repos are blocked unless the server was started with --allow-public.")] = None,
+    auto_init: Annotated[Optional[bool], Field(description="True = create an initial commit (Gitea generates README based on defaults).")] = None,
 ):
     """Create a repository for a user (admin only)."""
     private = _enforce_private(private)
     return _call("POST", "/admin/users/{username}/repos", locals())
 
 @_op(gitea_admin_write)
-def admin_rename_user(username: str, new_username: str):
+def admin_rename_user(
+    username: str,
+    new_username: Annotated[str, Field(description="New login name (URL slug) for the user. Must be unique on the instance.")],
+):
     """Rename a user (admin only)."""
     return _ok(
         _get_client().post(
@@ -2352,7 +2562,11 @@ def admin_rename_user(username: str, new_username: str):
     )
 
 @_op(gitea_admin_write)
-def admin_create_user_public_key(username: str, title: str, key: str):
+def admin_create_user_public_key(
+    username: str,
+    title: Annotated[str, Field(description="Human-readable key label.")],
+    key: Annotated[str, Field(description="OpenSSH public-key text — full line, e.g. 'ssh-ed25519 AAAA... user@host'.")],
+):
     """Add a public key for a user (admin only)."""
     return _ok(
         _get_client().post(
@@ -2383,15 +2597,17 @@ def admin_delete_unadopted_repo(owner: str, repo: str):
 
 @_op(gitea_admin_read)
 def admin_list_emails(
-    limit: Optional[int] = None,
-    page: Optional[int] = None,
+    limit: Annotated[Optional[int], Field(description="Page size. Server default if omitted.")] = None,
+    page: Annotated[Optional[int], Field(description="1-based page number.")] = None,
 ):
     """List all emails (admin only)."""
     params = _body(locals())
     return _ok(_get_client().paginate("/admin/emails", params=params or None))
 
 @_op(gitea_admin_read)
-def admin_search_emails(query: str):
+def admin_search_emails(
+    query: Annotated[str, Field(description="Search keyword (substring match against user email address).")],
+):
     """Search emails (admin only)."""
     return _ok(_get_client().paginate("/admin/emails/search", params={"q": query}))
 
@@ -2487,7 +2703,11 @@ def list_org_action_secrets(org: str):
     return _ok(_get_client().paginate(f"/orgs/{org}/actions/secrets"))
 
 @_op(gitea_update)
-def create_org_action_secret(org: str, secret_name: str, data: str):
+def create_org_action_secret(
+    org: str,
+    secret_name: Annotated[str, Field(description="Secret name. Must match `^[A-Z_][A-Z0-9_]*$` (Gitea constraint). Referenced from workflows via ${{ secrets.NAME }}.")],
+    data: Annotated[str, Field(description="Secret PLAINTEXT value — Gitea encrypts it at rest. Not retrievable via API afterwards.")],
+):
     """Create or update an action secret in an organization."""
     return _ok(
         _get_client().put(
@@ -2512,7 +2732,11 @@ def get_org_action_variable(org: str, variable_name: str):
     return _ok(_get_client().get(f"/orgs/{org}/actions/variables/{variable_name}"))
 
 @_op(gitea_create)
-def create_org_action_variable(org: str, variable_name: str, value: str):
+def create_org_action_variable(
+    org: str,
+    variable_name: Annotated[str, Field(description="Variable name. Must match `^[A-Z_][A-Z0-9_]*$` (Gitea constraint). Referenced from workflows via ${{ vars.NAME }}.")],
+    value: Annotated[str, Field(description="Variable value (plaintext — visible to workflow logs; use create_org_action_secret for sensitive data).")],
+):
     """Create an action variable in an organization."""
     return _ok(
         _get_client().post(
@@ -2522,7 +2746,11 @@ def create_org_action_variable(org: str, variable_name: str, value: str):
     )
 
 @_op(gitea_update)
-def update_org_action_variable(org: str, variable_name: str, value: str):
+def update_org_action_variable(
+    org: str,
+    variable_name: Annotated[str, Field(description="Variable name to update (must already exist).")],
+    value: Annotated[str, Field(description="New variable value (plaintext — visible to workflow logs).")],
+):
     """Update an action variable in an organization."""
     return _ok(
         _get_client().put(
@@ -2545,7 +2773,10 @@ def list_user_action_secrets():
     return _ok(_get_client().paginate("/user/actions/secrets"))
 
 @_op(gitea_update)
-def create_user_action_secret(secret_name: str, data: str):
+def create_user_action_secret(
+    secret_name: Annotated[str, Field(description="Secret name. Must match `^[A-Z_][A-Z0-9_]*$` (Gitea constraint). Referenced from workflows via ${{ secrets.NAME }}.")],
+    data: Annotated[str, Field(description="Secret PLAINTEXT value — Gitea encrypts it at rest. Not retrievable via API afterwards.")],
+):
     """Create or update an action secret for the current user."""
     return _ok(
         _get_client().put(
@@ -2570,7 +2801,10 @@ def get_user_action_variable(variable_name: str):
     return _ok(_get_client().get(f"/user/actions/variables/{variable_name}"))
 
 @_op(gitea_create)
-def create_user_action_variable(variable_name: str, value: str):
+def create_user_action_variable(
+    variable_name: Annotated[str, Field(description="Variable name. Must match `^[A-Z_][A-Z0-9_]*$` (Gitea constraint). Referenced from workflows via ${{ vars.NAME }}.")],
+    value: Annotated[str, Field(description="Variable value (plaintext — visible to workflow logs; use create_user_action_secret for sensitive data).")],
+):
     """Create an action variable for the current user."""
     return _ok(
         _get_client().post(
@@ -2580,7 +2814,10 @@ def create_user_action_variable(variable_name: str, value: str):
     )
 
 @_op(gitea_update)
-def update_user_action_variable(variable_name: str, value: str):
+def update_user_action_variable(
+    variable_name: Annotated[str, Field(description="Variable name to update (must already exist).")],
+    value: Annotated[str, Field(description="New variable value (plaintext — visible to workflow logs).")],
+):
     """Update an action variable for the current user."""
     return _ok(
         _get_client().put(
@@ -2599,10 +2836,10 @@ def delete_user_action_variable(variable_name: str):
 
 @_op(gitea_create)
 def render_markdown(
-    text: str,
-    mode: Optional[str] = None,
-    context: Optional[str] = None,
-    wiki: Optional[bool] = None,
+    text: Annotated[str, Field(description="Raw Markdown source to render.")],
+    mode: Annotated[Optional[Literal["markdown", "comment", "wiki", "gfm"]], Field(description="Render mode. 'markdown' = strict CommonMark; 'gfm' = GitHub-flavored Markdown; 'comment' = issue/PR comment context; 'wiki' = wiki page context.")] = None,
+    context: Annotated[Optional[str], Field(description="Repository path like 'owner/repo' — used to resolve relative links and #N issue references.")] = None,
+    wiki: Annotated[Optional[bool], Field(description="True = treat input as a wiki page (enables wiki-style links). Equivalent to mode='wiki'.")] = None,
 ):
     """Render a markdown string. Returns HTML text."""
     body: dict = {"Text": text}
@@ -2615,7 +2852,9 @@ def render_markdown(
     return _get_client()._text("POST", "/markdown", json=body)
 
 @_op(gitea_read)
-def search_topics(query: str):
+def search_topics(
+    query: Annotated[str, Field(description="Search keyword (substring match against topic names).")],
+):
     """Search for topics by keyword."""
     return _ok(_get_client().get("/topics/search", params={"q": query}))
 
@@ -2640,17 +2879,25 @@ def get_nodeinfo():
     return _ok(_get_client().get("/nodeinfo"))
 
 @_op(gitea_read)
-def get_gitignore_template(name: str):
+def get_gitignore_template(
+    name: Annotated[str, Field(description="Template name as returned by list_gitignore_templates (e.g. 'Go', 'Python', 'Node').")],
+):
     """Get a specific .gitignore template by name."""
     return _ok(_get_client().get(f"/gitignore/templates/{name}"))
 
 @_op(gitea_read)
-def get_license_template(name: str):
+def get_license_template(
+    name: Annotated[str, Field(description="License template name as returned by list_license_templates (e.g. 'MIT', 'Apache-2.0', 'GPL-3.0').")],
+):
     """Get a specific license template by name."""
     return _ok(_get_client().get(f"/licenses/{name}"))
 
 @_op(gitea_read)
-def list_package_versions(owner: str, type: str, name: str):
+def list_package_versions(
+    owner: str,
+    type: Annotated[Literal["alpine", "arch", "cargo", "chef", "composer", "conan", "conda", "container", "cran", "debian", "generic", "go", "helm", "maven", "npm", "nuget", "pub", "pypi", "rpm", "rubygems", "swift", "vagrant"], Field(description="Gitea package registry type (the package format).")],
+    name: Annotated[str, Field(description="Package name as registered (format depends on type).")],
+):
     """List versions of a package."""
     return _ok(
         _get_client().paginate(f"/packages/{owner}/{type}/{name}")
@@ -2665,8 +2912,8 @@ def get_repo_languages(owner: str, repo: str):
 def list_repo_activities(
     owner: str,
     repo: str,
-    page: Optional[int] = None,
-    limit: Optional[int] = None,
+    page: Annotated[Optional[int], Field(description="1-based page number.")] = None,
+    limit: Annotated[Optional[int], Field(description="Page size. Server default if omitted.")] = None,
 ):
     """List activity feeds for a repository."""
     params = _body(locals(), exclude=("owner", "repo"))
@@ -2677,17 +2924,29 @@ def list_repo_activities(
     )
 
 @_op(gitea_read)
-def get_repo_git_notes(owner: str, repo: str, sha: str):
+def get_repo_git_notes(
+    owner: str,
+    repo: str,
+    sha: Annotated[str, Field(description="Commit SHA whose git-note should be fetched.")],
+):
     """Get a git note for a commit."""
     return _ok(_get_client().get(f"/repos/{owner}/{repo}/git/notes/{sha}"))
 
 @_op(gitea_read)
-def get_repo_archive(owner: str, repo: str, archive: str):
+def get_repo_archive(
+    owner: str,
+    repo: str,
+    archive: Annotated[str, Field(description="Archive ref + format, e.g. 'main.tar.gz', 'main.zip', 'v1.2.0.tar.gz', '<commit-sha>.zip'. Extension chooses the format.")],
+):
     """Get an archive of a repository. archive should be like 'main.tar.gz' or 'main.zip'."""
     return _get_client().get_text(f"/repos/{owner}/{repo}/archive/{archive}")
 
 @_op(gitea_read)
-def list_repo_refs(owner: str, repo: str, ref_type: str = ""):
+def list_repo_refs(
+    owner: str,
+    repo: str,
+    ref_type: Annotated[Literal["", "heads", "tags"], Field(description="Filter: '' (default) lists all refs, 'heads' lists branches, 'tags' lists tags.")] = "",
+):
     """List git references in a repository. ref_type can be empty, 'heads', or 'tags'."""
     path = f"/repos/{owner}/{repo}/git/refs"
     if ref_type:
@@ -2698,8 +2957,8 @@ def list_repo_refs(owner: str, repo: str, ref_type: str = ""):
 def get_git_tree(
     owner: str,
     repo: str,
-    sha: str,
-    recursive: Optional[bool] = None,
+    sha: Annotated[str, Field(description="Tree SHA or commit SHA whose tree should be returned.")],
+    recursive: Annotated[Optional[bool], Field(description="True = include all descendant entries (full tree). False/omitted = only direct children.")] = None,
 ):
     """Get the tree for a commit SHA."""
     return _call("GET", "/repos/{owner}/{repo}/git/trees/{sha}", locals())
@@ -2708,23 +2967,23 @@ def get_git_tree(
 def transfer_repo(
     owner: str,
     repo: str,
-    new_owner: str,
-    team_ids: Optional[list[int]] = None,
+    new_owner: Annotated[str, Field(description="Username or org login that should receive the repository.")],
+    team_ids: Annotated[Optional[list[int]], Field(description="Team IDs to grant access on transfer (only meaningful when `new_owner` is an organization).")] = None,
 ):
     """Transfer a repository to another owner."""
     return _call("POST", "/repos/{owner}/{repo}/transfer", locals())
 
 @_op(gitea_create)
 def create_repo_from_template(
-    template_owner: str,
-    template_repo: str,
-    name: str,
-    owner: str,
+    template_owner: Annotated[str, Field(description="Owner (user/org) of the source template repository.")],
+    template_repo: Annotated[str, Field(description="Name of the source template repository (must have `is_template` set).")],
+    name: Annotated[str, Field(description="Repository slug for the new repo (URL-safe short name).")],
+    owner: Annotated[str, Field(description="Username or org login that will own the new repo.")],
     description: Optional[str] = None,
-    private: Optional[bool] = None,
-    git_content: Optional[bool] = None,
-    topics: Optional[bool] = None,
-    labels: Optional[bool] = None,
+    private: Annotated[Optional[bool], Field(description="True = create the new repo as private.")] = None,
+    git_content: Annotated[Optional[bool], Field(description="True = copy git history/files from the template.")] = None,
+    topics: Annotated[Optional[bool], Field(description="True = copy the template's topics to the new repo.")] = None,
+    labels: Annotated[Optional[bool], Field(description="True = copy issue labels from the template.")] = None,
 ):
     """Create a repository from a template."""
     private = _enforce_private(private)
@@ -2762,7 +3021,10 @@ def delete_pull_review(owner: str, repo: str, index: int, review_id: int):
 
 @_op(gitea_delete)
 def remove_pull_reviewers(
-    owner: str, repo: str, index: int, reviewers: list[str]
+    owner: str,
+    repo: str,
+    index: int,
+    reviewers: Annotated[list[str], Field(description="Usernames whose review request should be removed from this PR.")],
 ):
     """Remove reviewers from a pull request."""
     return _ok(

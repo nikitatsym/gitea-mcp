@@ -191,12 +191,18 @@ def configure_env(gitea_instance, gitea_token):
     os.environ["GITEA_URL"] = gitea_instance
     os.environ["GITEA_TOKEN"] = gitea_token
 
+    # Integration suite needs public-repo creation; production safeguard is
+    # set_allow_public(False) by default, overridden here for the test session.
+    from gitea_mcp.config import set_allow_public
+    set_allow_public(True)
+
     # Reset the cached client so it picks up new env
     import gitea_mcp.tools as _tools
 
     _tools._client = None
     yield
     _tools._client = None
+    set_allow_public(False)
 
 
 @pytest.fixture(scope="session")

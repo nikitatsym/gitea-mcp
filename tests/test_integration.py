@@ -39,8 +39,8 @@ class TestAgentWorkflow:
 
     def test_01_version(self, agent):
         """Agent checks Gitea version."""
-        result = agent.call("get_version")
-        assert "version" in result
+        result = agent.call("gitea_version")
+        assert "service" in result
 
     def test_02_current_user(self, agent):
         """Agent verifies its identity."""

@@ -15,7 +15,12 @@ ROOT = Group("root", "")
 
 
 def _op(group: Group):
-    """Mark a function as an MCP tool in the given group."""
+    """Mark a function as an MCP tool in the given group.
+
+    A Pydantic params model is built from the signature at server registration
+    time; descriptions/constraints in `Annotated[T, Field(...)]` flow into the
+    JSON Schema returned by `operation='schema'`.
+    """
     def decorator(fn):
         if not fn.__doc__:
             raise RuntimeError(f"Tool function {fn.__name__!r} has no docstring")
