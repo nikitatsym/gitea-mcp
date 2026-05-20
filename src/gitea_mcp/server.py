@@ -231,7 +231,8 @@ def _register_tools():
             _all_grouped[pascal_name] = group_name
 
         def _make_tool(gname, gdoc):
-            def tool_fn(operation: str, params: dict = {}):
+            def tool_fn(operation: str, params: dict | None = None):
+                params = params or {}
                 if operation == "help":
                     return _build_help(gname)
                 return _dispatch(operation, gname, params)
