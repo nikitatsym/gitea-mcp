@@ -1,0 +1,15 @@
+{
+  "name": "gitea-mcp-scripts",
+  "private": true,
+  "description": "Workflow scripts for gitea-mcp — docker compose lifecycle, bootstrap, tests",
+  "scripts": {
+    "gitea:up": "docker compose -f tests/docker-compose.yml up -d gitea && npm run gitea:bootstrap",
+    "gitea:bootstrap": "uv run python scripts/bootstrap.py",
+    "gitea:down": "docker compose -f tests/docker-compose.yml down -v",
+    "gitea:logs": "docker compose -f tests/docker-compose.yml logs -f gitea",
+    "gitea:status": "docker compose -f tests/docker-compose.yml ps",
+    "test": "uv run pytest -m 'not integration'",
+    "test:integration": "uv run pytest -m integration tests/test_integration.py",
+    "test:integration:full": "npm run gitea:up && npm run test:integration; rv=$?; npm run gitea:down; exit $rv"
+  }
+}

@@ -27,3 +27,9 @@ Repository = "https://github.com/nikitatsym/gitea-mcp"
 dev = [
     "pytest>=9.0.2",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires a running Gitea instance (see scripts/bootstrap.py)",
+]
+addopts = "-m 'not integration'"

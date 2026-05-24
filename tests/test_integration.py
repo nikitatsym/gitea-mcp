@@ -11,6 +11,8 @@ The test simulates a realistic agent workflow:
 import time
 import pytest
 
+pytestmark = pytest.mark.integration
+
 ADMIN_USER = "testadmin"
 
 
@@ -559,6 +561,16 @@ jobs:
 
     def test_78_merge_pr(self, agent):
         """Agent merges the PR."""
+        # Gitea's `mergeable` flag is computed asynchronously after PR
+        # creation. POSTing to /merge while it's still null returns a
+        # misleading 405 with body `{"message": "Please try again later"}`.
+        # Wait for the flag to converge before attempting the merge — and
+        # raise loudly if it goes False or times out so the test failure
+        # mode is "Gitea told us no" rather than "405 in the middle of the
+        # test for unclear reasons."
+        from conftest import wait_for_pr_mergeable
+        wait_for_pr_mergeable(agent, self.owner, self.repo_name, self.pr_index)
+
         result = agent.call("merge_pull_request",
             owner=self.owner,
             repo=self.repo_name,
