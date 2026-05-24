@@ -1,9 +1,25 @@
-"""Shared helpers: slim functions, validation, response formatting."""
+"""Shared helpers: slim functions, validation, response formatting.
+
+Payload assembly policy (see `_body`):
+
+  default          drops both `None` and `_UNSET` — back-compat with the
+                   pre-`_UNSET` shape, so the bulk of ops keep working
+                   unchanged after the sentinel is introduced.
+  `keep_null=`     per-op opt-in for nullable-clear semantics. List the
+                   field names whose caller-supplied `None` must reach the
+                   API as JSON `null` (e.g. clearing a milestone). Those
+                   params must be declared with default `_UNSET` (not
+                   `None`) so the omitted-vs-cleared distinction survives
+                   Pydantic validation.
+  always           `_UNSET` is dropped (it's a sentinel for "caller omitted",
+                   not a value).
+"""
 
 import os
 import re
 
 from .config import allow_public
+from .registry import _UNSET
 
 _BRIEF_MAX = int(os.environ.get("MCP_GITEA_BRIEF_MAX", "100"))
 
@@ -62,27 +78,43 @@ def _ok(data):
     return data
 
 
-def _body(local_vars: dict, exclude=(), rename: dict | None = None) -> dict:
+def _body(
+    local_vars: dict,
+    exclude=(),
+    rename: dict | None = None,
+    keep_null=(),
+) -> dict:
     """Build a JSON body or query-params dict from function locals.
 
-    Drops keys whose value is None and any key listed in `exclude`. The
-    optional `rename` map translates Python parameter names to API field
-    names (e.g. `{"status_types": "status-types"}`). Use as:
+    Drops keys whose value is `None` or `_UNSET`, plus any key listed in
+    `exclude`. The optional `rename` map translates Python parameter names
+    to API field names (e.g. `{"status_types": "status-types"}`). Use as:
 
         body = _body(locals(), exclude=("owner", "repo"))
         params = _body(locals(), exclude=("brief",),
                        rename={"status_types": "status-types"})
+
+    `keep_null=("assignee",)` opts a specific field in to nullable-clear
+    semantics: a caller-supplied `None` is forwarded as JSON `null` instead
+    of being dropped. Those params must default to `_UNSET` (not `None`) so
+    the omitted case can still be told apart from the clear case.
 
     Adding a new optional parameter to the function signature automatically
     forwards it to the API — no `if x is not None: body["x"] = x` to forget.
     """
     excl = set(exclude)
     rmap = rename or {}
-    return {
-        rmap.get(k, k): v
-        for k, v in local_vars.items()
-        if v is not None and k not in excl
-    }
+    keep = set(keep_null)
+    out: dict = {}
+    for k, v in local_vars.items():
+        if k in excl:
+            continue
+        if v is _UNSET:
+            continue
+        if v is None and k not in keep:
+            continue
+        out[rmap.get(k, k)] = v
+    return out
 
 
 # ── Slim functions ───────────────────────────────────────────────────────────

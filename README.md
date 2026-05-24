@@ -4,7 +4,7 @@ MCP server for Gitea -- full API coverage for autonomous AI agents.
 
 ## Features
 
-- **300 tools** covering the entire Gitea API surface
+- **~290 operations** covering the entire Gitea API surface
 - Repositories, issues, pull requests, releases, labels, milestones
 - File content management (create, read, update, delete)
 - Branches, tags, commits, and status checks
@@ -12,7 +12,8 @@ MCP server for Gitea -- full API coverage for autonomous AI agents.
 - Organizations, teams, and user management
 - Webhooks, deploy keys, notifications, wiki, packages
 - Admin endpoints for instance-level operations
-- **Compact mode** -- collapse all tools into 6 meta-tools via `GITEA_COMPACT=true`
+- **6 risk-graded meta-tools** (`gitea_read` / `gitea_write` / `gitea_execute` / `gitea_delete` / `gitea_admin_read` / `gitea_admin_write`) — agents pick a tool surface by the kind of side effect, not the HTTP verb
+- Per-param help with `operation='help' params={'search': 'foo'}` for substring filtering and cross-group hints
 - Zero-config install via `uvx`
 
 ## Quick Start
@@ -43,9 +44,7 @@ Or use the interactive **[Setup Page](https://nikitatsym.github.io/gitea-mcp/)**
 |---|---|---|
 | `GITEA_URL` | Yes | Base URL of your Gitea instance (e.g. `https://gitea.example.com`) |
 | `GITEA_TOKEN` | Yes | Personal access token with appropriate permissions. For `CreateUserAccessToken` self-rotation, must include `write:user` (or `all`) scope. |
-| `GITEA_COMPACT` | No | Set to `true` to enable compact mode (see below) |
-| `GITEA_REQUIRE_BRIEF` | No | Require `<brief>summary</brief>` tag in issue body on create/edit (default: `true`) |
-| `GITEA_BRIEF_MAX_LENGTH` | No | Max character length for brief summary (default: `200`) |
+| `MCP_GITEA_BRIEF_MAX` | No | Max character length for the `<brief>summary</brief>` tag enforced on issue/PR bodies (default: `100`; `0` disables the requirement) |
 
 By default, creating public repos and orgs is blocked — agents must pass `private=true` explicitly. To allow public repos, add `--allow-public` to the command args:
 
@@ -53,51 +52,32 @@ By default, creating public repos and orgs is blocked — agents must pass `priv
 "args": ["--refresh", "--extra-index-url", "https://nikitatsym.github.io/gitea-mcp/simple", "gitea-mcp", "--allow-public"]
 ```
 
-## Compact Mode
+## Tool Groups
 
-By default, gitea-mcp exposes 300 individual tools. Some MCP clients handle large tool counts poorly (slow startup, context bloat, or hard limits).
+All ~290 operations are exposed through 6 risk-graded meta-tools — one tool surface per scope, dispatched via `operation` + `params`. Aligned with the v2 MCP spec so agents pick a tool by the kind of side effect, not the HTTP verb.
 
-**Compact mode** collapses all 300 tools into 6 meta-tools for granular permission control. Set `GITEA_COMPACT=true` to enable it:
+| Meta-tool | Scope | Examples |
+|---|---|---|
+| `gitea_read` | GET, safe / read-only | `ListRepos`, `GetIssue`, `ListPullRequests` |
+| `gitea_write` | Create + update (POST/PUT/PATCH) | `CreateRepo`, `EditIssue`, `CreatePullRequest` |
+| `gitea_execute` | Action triggers with real-world side effects | `MergePullRequest`, `DispatchWorkflow` |
+| `gitea_delete` | Destructive DELETE | `DeleteRepo`, `DeleteBranch` |
+| `gitea_admin_read` | Admin-scope GET | `AdminListUsers`, `AdminListRunners` |
+| `gitea_admin_write` | Admin-scope writes + admin actions | `AdminCreateUser`, `AdminRunCronJob` |
 
-```json
-{
-  "mcpServers": {
-    "gitea": {
-      "command": "uvx",
-      "args": ["--refresh", "--extra-index-url", "https://nikitatsym.github.io/gitea-mcp/simple", "gitea-mcp"],
-      "env": {
-        "GITEA_URL": "https://gitea.example.com",
-        "GITEA_TOKEN": "your-api-token",
-        "GITEA_COMPACT": "true"
-      }
-    }
-  }
-}
-```
-
-| Tool | HTTP | Admin? | Signature |
-|---|---|---|---|
-| `gitea_read` | GET | no | `(path, params)` |
-| `gitea_create` | POST | no | `(path, params)` |
-| `gitea_update` | PUT/PATCH | no | `(method, path, params)` |
-| `gitea_delete` | DELETE | no | `(path, params)` |
-| `gitea_admin_read` | GET | yes | `(path, params)` |
-| `gitea_admin_write` | POST/PUT/PATCH/DELETE | yes | `(method, path, params)` |
-
-Usage examples:
+Each meta-tool takes `operation` (PascalCase op name, or `help` / `schema`) plus `params` (dict):
 
 ```
-gitea_read("help")                           → list GET endpoints
-gitea_read("/version")                       → get server version
-gitea_read("/repos/owner/repo")              → get a repository
-gitea_create("/user/repos", '{"name":"my-repo","auto_init":true}')
-gitea_update("PATCH", "/repos/owner/repo", '{"description":"updated"}')
-gitea_delete("/repos/owner/repo")            → delete a repository
-gitea_admin_read("/admin/users")             → list all users (admin)
-gitea_admin_write("POST", "/admin/users", '{"username":"new","email":"a@b.c","password":"..."}')
+gitea_read(operation="help")                                                # list every op in this group
+gitea_read(operation="help", params={"search": "merge"})                    # filter by substring; surfaces cross-group hits
+gitea_read(operation="schema", params={"op": "GetRepo"})                    # full JSON Schema for one op
+gitea_read(operation="GetRepo", params={"owner": "alice", "repo": "x"})     # invoke
+
+gitea_write(operation="CreateIssue", params={"owner": "alice", "repo": "x", "title": "Bug", "body": "<brief>repro</brief>"})
+gitea_execute(operation="MergePullRequest", params={"owner": "alice", "repo": "x", "index": 7, "merge_type": "squash"})
 ```
 
-All tools accept `path="help"` to list their relevant endpoints. File and wiki content is auto-base64 encoded -- pass plain text in the `"content"` field.
+Params are validated strictly via Pydantic: unknown keys, wrong types, and missing required fields all surface as a `ValueError` with field-level detail.
 
 ## Creating a Gitea API Token
 
@@ -107,20 +87,36 @@ All tools accept `path="help"` to list their relevant endpoints. File and wiki c
 4. Select the permissions your agent needs (read/write on repos, issues, etc.).
 5. Click **Generate Token** and copy the value immediately -- it is shown only once.
 
-## Running Tests
+## Development
 
-The test suite runs against a real Gitea instance managed by Docker Compose.
+The project uses npm scripts for the local test lifecycle:
 
 ```bash
-# Start Gitea
-docker compose -f tests/docker-compose.yml up -d
+# unit tests (no docker, fast)
+npm test
 
-# Wait for Gitea to be ready, then run tests
-uv run pytest tests/ -v
+# bring up Gitea container + bootstrap admin user + write tests/.env
+npm run gitea:up
 
-# Tear down
-docker compose -f tests/docker-compose.yml down -v
+# run integration tests against the live container
+npm run test:integration
+
+# tear down
+npm run gitea:down
 ```
+
+`npm run gitea:bootstrap` is idempotent — re-running against an already-bootstrapped instance no-ops if `tests/.env` carries a still-valid token, otherwise deletes the named token and creates a fresh one. The bootstrap script (`scripts/bootstrap.py`) is also runnable directly via `uv run python scripts/bootstrap.py`.
+
+`tests/.env` schema:
+
+```
+GITEA_URL=http://localhost:3000
+GITEA_TOKEN=<sha1>
+GITEA_ADMIN_USER=testadmin
+GITEA_ADMIN_PASSWORD=testadmin1234
+```
+
+Integration tests are gated behind `@pytest.mark.integration` and skipped unless `GITEA_URL` + `GITEA_TOKEN` are present — `npm test` will not require docker.
 
 ## License
 

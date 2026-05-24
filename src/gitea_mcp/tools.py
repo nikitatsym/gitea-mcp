@@ -34,23 +34,29 @@ def _call(
     *,
     rename: dict | None = None,
     exclude=(),
+    keep_null=(),
 ):
     """Make a Gitea API call, deriving path-params and body/query from `kw`.
 
     Placeholders in `path` (e.g. `/repos/{owner}/{repo}`) are interpolated
     from `kw` and automatically excluded from the request body/query.
-    Remaining non-None entries in `kw` become JSON body for write methods
+    Remaining entries in `kw` become JSON body for write methods
     (POST/PUT/PATCH) or query params for GET/DELETE.
 
     `rename` maps Python names to API field names (e.g. snake→kebab).
     `exclude` drops internal helper args (e.g. `brief`) not meant for the
-    wire. Use this for the simple one-call pattern; for paginated, slimmed,
+    wire. `keep_null` opts specific fields into Gitea's nullable-clear
+    semantics — callers passing `None` for those fields get JSON `null` on
+    the wire (instead of the value being dropped); other params default
+    to `_UNSET` so omission still excludes them. See `prepare.py:_body`.
+
+    Use this for the simple one-call pattern; for paginated, slimmed,
     text, or transformation-heavy endpoints, call the client directly.
     """
     placeholders = _PATH_PLACEHOLDER.findall(path)
     excl = set(placeholders) | set(exclude)
     formatted = path.format(**{k: kw[k] for k in placeholders})
-    payload = _body(kw, exclude=excl, rename=rename)
+    payload = _body(kw, exclude=excl, rename=rename, keep_null=keep_null)
     client = _get_client()
     method = method.upper()
     if method == "GET":
@@ -70,18 +76,64 @@ def _call(
 
 _GROUP_USAGE = (
     "\n\n"
-    "operation='help'   — list ops with parameter names + types.\n"
-    "operation='schema' — JSON Schema for one op. params={'op': 'OpName'} or params={} to list op names.\n"
-    "operation='<OpName>' params={...} — invoke. Params validated strictly: "
+    "operation='help'                        — list ops with parameter names + types.\n"
+    "operation='help' params={'search':'X'}  — same, filtered to ops whose name contains X (case-insensitive).\n"
+    "operation='schema'                      — JSON Schema for one op. params={'op': 'OpName'} or params={} to list op names.\n"
+    "operation='<OpName>' params={...}       — invoke. Params validated strictly: "
     "unknown keys, wrong types, missing required → ValueError with field-level detail."
 )
 
-gitea_read = Group("gitea_read", "Gitea read operations (GET)." + _GROUP_USAGE)
-gitea_create = Group("gitea_create", "Gitea create operations (POST)." + _GROUP_USAGE)
-gitea_update = Group("gitea_update", "Gitea update operations (PUT/PATCH)." + _GROUP_USAGE)
-gitea_delete = Group("gitea_delete", "Gitea delete operations (DELETE)." + _GROUP_USAGE)
+# ── Group policy ──────────────────────────────────────────────────────────
+#
+# Risk-graded scoping per the v2 MCP spec — agents choose a tool surface by
+# the kind of side effect, not the HTTP verb. Aligned with gitlab-mcp's
+# convention so a user moving between MCPs sees the same shape of names.
+#
+#   gitea_read         — GETs. Safe, read-only.
+#   gitea_write        — POST/PUT/PATCH that create or update resources
+#                        (issues, PRs, files, repos, labels, ...).
+#   gitea_execute      — action-trigger ops with real-world side effects
+#                        beyond CRUD: merging PRs, dispatching workflows,
+#                        retry/cancel/rerun, mirror sync. Promoted to a
+#                        separate surface so privilege boundaries can be
+#                        drawn at this level rather than per-tool.
+#   gitea_delete       — destructive DELETEs.
+#   gitea_admin_read   — admin-scope GETs (instance-wide visibility).
+#   gitea_admin_write  — admin-scope POST/PUT/PATCH/DELETE (and admin
+#                        actions like `admin_run_cron_job`). Admin actions
+#                        stay here rather than moving into gitea_execute
+#                        because the permission boundary matters more than
+#                        the verb.
+#
+# Token-issuance ops (`create_*_runner_token`) stay in gitea_write — they're
+# functionally similar to "create a resource", and clustering them with
+# `merge_pull_request` / `dispatch_workflow` would dilute the meaning of
+# gitea_execute.
+
+gitea_read = Group("gitea_read", "Gitea read operations — safe, GET-only." + _GROUP_USAGE)
+gitea_write = Group(
+    "gitea_write",
+    "Gitea write operations — create or update resources (POST/PUT/PATCH)." + _GROUP_USAGE,
+)
+gitea_execute = Group(
+    "gitea_execute",
+    "Gitea action triggers — merge PRs, dispatch workflows, and other "
+    "side-effecting actions beyond plain CRUD." + _GROUP_USAGE,
+)
+gitea_delete = Group("gitea_delete", "Gitea delete operations (DELETE) — destructive." + _GROUP_USAGE)
 gitea_admin_read = Group("gitea_admin_read", "Gitea admin read operations (GET /admin/*)." + _GROUP_USAGE)
-gitea_admin_write = Group("gitea_admin_write", "Gitea admin write operations (POST/PUT/PATCH/DELETE /admin/*)." + _GROUP_USAGE)
+gitea_admin_write = Group(
+    "gitea_admin_write",
+    "Gitea admin write operations (POST/PUT/PATCH/DELETE /admin/*) and "
+    "admin-scope actions like running cron jobs." + _GROUP_USAGE,
+)
+
+# Backward-compat aliases — pre-v2 code in this module still references
+# `gitea_create` and `gitea_update`. The actual decorator calls are migrated
+# to `gitea_write` below; these aliases keep import paths stable for any
+# external integration that picked them up.
+gitea_create = gitea_write
+gitea_update = gitea_write
 
 # ── General ──────────────────────────────────────────────────────────────────
 
@@ -136,7 +188,7 @@ def list_following(username: str):
     """List the users that a user is following."""
     return _ok(_get_client().paginate(f"/users/{username}/following"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def follow_user(username: str):
     """Follow a user."""
     return _ok(_get_client().put(f"/user/following/{username}"))
@@ -166,7 +218,7 @@ def list_user_emails():
     """List the current user's email addresses."""
     return _ok(_get_client().get("/user/emails"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def add_user_email(emails: list[str]):
     """Add email addresses for the current user."""
     return _ok(_get_client().post("/user/emails", json={"emails": emails}))
@@ -188,7 +240,7 @@ def list_oauth2_apps():
     """List the current user's OAuth2 applications."""
     return _ok(_get_client().paginate("/user/applications/oauth2"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_oauth2_app(
     name: str,
     redirect_uris: Annotated[list[str], Field(description="Allowed OAuth2 redirect URIs (absolute URLs).")],
@@ -202,7 +254,7 @@ def get_oauth2_app(app_id: int):
     """Get an OAuth2 application by ID."""
     return _ok(_get_client().get(f"/user/applications/oauth2/{app_id}"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_oauth2_app(
     app_id: int,
     name: Optional[str] = None,
@@ -222,7 +274,7 @@ def list_blocked_users():
     """List users blocked by the current user."""
     return _ok(_get_client().paginate("/user/blocks"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def block_user(username: str):
     """Block a user."""
     return _ok(_get_client().put(f"/user/blocks/{username}"))
@@ -232,7 +284,7 @@ def unblock_user(username: str):
     """Unblock a user."""
     return _ok(_get_client().delete(f"/user/blocks/{username}"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def update_user_settings(
     description: Optional[str] = None,
     full_name: Optional[str] = None,
@@ -275,7 +327,7 @@ def _basic_auth_request(method: str, path: str, username: str, password: str, js
     return r.json() if r.content else None
 
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_user_access_token(
     name: Annotated[str, Field(description="Human-readable token name (shown in user's token list).")],
     scopes: Annotated[list[str], Field(description=(
@@ -327,7 +379,7 @@ def list_ssh_keys():
     """List the current user's SSH keys."""
     return _ok(_get_client().paginate("/user/keys"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_ssh_key(
     title: Annotated[str, Field(description="Human-readable key label.")],
     key: Annotated[str, Field(description="OpenSSH public-key text — full line, e.g. 'ssh-ed25519 AAAA... user@host'.")],
@@ -345,7 +397,7 @@ def list_gpg_keys():
     """List the current user's GPG keys."""
     return _ok(_get_client().paginate("/user/gpg_keys"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_gpg_key(
     armored_public_key: Annotated[str, Field(description="ASCII-armored OpenPGP public key block (begins with '-----BEGIN PGP PUBLIC KEY BLOCK-----').")],
 ):
@@ -387,7 +439,7 @@ def search_repos(
         data = _slim_repos(data)
     return _ok(data)
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_repo(
     name: str,
     description: Optional[str] = None,
@@ -407,7 +459,7 @@ def get_repo(owner: str, repo: str):
     """Get a repository by owner and name."""
     return _ok(_get_client().get(f"/repos/{owner}/{repo}"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_repo(
     owner: str,
     repo: str,
@@ -434,7 +486,7 @@ def delete_repo(owner: str, repo: str):
     """Delete a repository."""
     return _ok(_get_client().delete(f"/repos/{owner}/{repo}"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def fork_repo(
     owner: str,
     repo: str,
@@ -463,7 +515,7 @@ def list_repo_topics(owner: str, repo: str):
     """List a repository's topics."""
     return _ok(_get_client().get(f"/repos/{owner}/{repo}/topics"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def set_repo_topics(
     owner: str,
     repo: str,
@@ -479,7 +531,7 @@ def list_repo_collaborators(owner: str, repo: str):
     """List a repository's collaborators."""
     return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/collaborators"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def add_repo_collaborator(
     owner: str,
     repo: str,
@@ -501,7 +553,7 @@ def remove_repo_collaborator(owner: str, repo: str, collaborator: str):
         _get_client().delete(f"/repos/{owner}/{repo}/collaborators/{collaborator}")
     )
 
-@_op(gitea_update)
+@_op(gitea_write)
 def star_repo(owner: str, repo: str):
     """Star a repository."""
     return _ok(_get_client().put(f"/user/starred/{owner}/{repo}"))
@@ -523,7 +575,7 @@ def list_my_starred_repos(
         data = _slim_repos(data)
     return _ok(data)
 
-@_op(gitea_update)
+@_op(gitea_write)
 def add_repo_topic(owner: str, repo: str, topic: str):
     """Add a topic to a repository."""
     return _ok(_get_client().put(f"/repos/{owner}/{repo}/topics/{topic}"))
@@ -550,7 +602,7 @@ def list_my_subscriptions(
         data = _slim_repos(data)
     return _ok(data)
 
-@_op(gitea_update)
+@_op(gitea_write)
 def watch_repo(owner: str, repo: str):
     """Watch a repository."""
     return _ok(
@@ -597,7 +649,7 @@ def list_repo_webhooks(owner: str, repo: str):
     """List a repository's webhooks."""
     return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/hooks"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_repo_webhook(
     owner: str,
     repo: str,
@@ -615,7 +667,7 @@ def create_repo_webhook(
     }
     return _ok(_get_client().post(f"/repos/{owner}/{repo}/hooks", json=body))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_repo_webhook(
     owner: str,
     repo: str,
@@ -632,7 +684,7 @@ def delete_repo_webhook(owner: str, repo: str, hook_id: int):
     """Delete a repository webhook."""
     return _ok(_get_client().delete(f"/repos/{owner}/{repo}/hooks/{hook_id}"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def test_repo_webhook(owner: str, repo: str, hook_id: int):
     """Test a repository webhook."""
     return _ok(_get_client().post(f"/repos/{owner}/{repo}/hooks/{hook_id}/tests"))
@@ -645,7 +697,7 @@ def list_org_webhooks(org: str):
     """List webhooks for an organization."""
     return _ok(_get_client().paginate(f"/orgs/{org}/hooks"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_org_webhook(
     org: str,
     config: Annotated[dict, Field(description="Webhook config (string keys, string values). Required keys depend on hook_type. For 'gitea'/'gogs': {'url': 'https://...', 'content_type': 'json'|'form', 'secret': '...'}. Other hook types use their own URL/token fields.")],
@@ -662,7 +714,7 @@ def create_org_webhook(
     }
     return _ok(_get_client().post(f"/orgs/{org}/hooks", json=body))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_org_webhook(
     org: str,
     hook_id: int,
@@ -686,7 +738,7 @@ def list_deploy_keys(owner: str, repo: str):
     """List a repository's deploy keys."""
     return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/keys"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_deploy_key(
     owner: str,
     repo: str,
@@ -721,7 +773,7 @@ def get_file_content(
     """Get the metadata and content of a file in a repository."""
     return _call("GET", "/repos/{owner}/{repo}/contents/{filepath}", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_file(
     owner: str,
     repo: str,
@@ -751,7 +803,7 @@ def create_file(
         _get_client().post(f"/repos/{owner}/{repo}/contents/{filepath}", json=body)
     )
 
-@_op(gitea_update)
+@_op(gitea_write)
 def update_file(
     owner: str,
     repo: str,
@@ -828,7 +880,7 @@ def get_branch(owner: str, repo: str, branch: str):
     """Get a specific branch of a repository."""
     return _ok(_get_client().get(f"/repos/{owner}/{repo}/branches/{branch}"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_branch(
     owner: str,
     repo: str,
@@ -849,7 +901,7 @@ def list_branch_protections(owner: str, repo: str):
     """List branch protections for a repository."""
     return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/branch_protections"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_branch_protection(
     owner: str,
     repo: str,
@@ -873,7 +925,7 @@ def get_branch_protection(owner: str, repo: str, name: str):
         _get_client().get(f"/repos/{owner}/{repo}/branch_protections/{name}")
     )
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_branch_protection(
     owner: str,
     repo: str,
@@ -905,7 +957,7 @@ def list_tag_protections(owner: str, repo: str):
     """List tag protections for a repository."""
     return _ok(_get_client().get(f"/repos/{owner}/{repo}/tag_protections"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_tag_protection(
     owner: str,
     repo: str,
@@ -925,7 +977,7 @@ def get_tag_protection(owner: str, repo: str, tag_protection_id: int):
         )
     )
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_tag_protection(
     owner: str,
     repo: str,
@@ -998,7 +1050,7 @@ def list_commit_statuses(owner: str, repo: str, sha: str):
     """List statuses for a commit."""
     return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/statuses/{sha}"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_commit_status(
     owner: str,
     repo: str,
@@ -1024,7 +1076,7 @@ def list_tags(owner: str, repo: str):
     """List a repository's tags."""
     return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/tags"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_tag(
     owner: str,
     repo: str,
@@ -1070,7 +1122,7 @@ def get_release(owner: str, repo: str, release_id: int):
     """Get a release by ID."""
     return _call("GET", "/repos/{owner}/{repo}/releases/{release_id}", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_release(
     owner: str,
     repo: str,
@@ -1084,7 +1136,7 @@ def create_release(
     """Create a new release in a repository."""
     return _call("POST", "/repos/{owner}/{repo}/releases", locals())
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_release(
     owner: str,
     repo: str,
@@ -1112,7 +1164,7 @@ def list_repo_labels(owner: str, repo: str):
     """List a repository's labels."""
     return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/labels"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_repo_label(
     owner: str,
     repo: str,
@@ -1123,7 +1175,7 @@ def create_repo_label(
     """Create a label in a repository."""
     return _call("POST", "/repos/{owner}/{repo}/labels", locals())
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_repo_label(
     owner: str,
     repo: str,
@@ -1160,7 +1212,7 @@ def get_milestone(owner: str, repo: str, milestone_id: int):
     """Get a milestone by ID."""
     return _call("GET", "/repos/{owner}/{repo}/milestones/{milestone_id}", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_milestone(
     owner: str,
     repo: str,
@@ -1172,7 +1224,7 @@ def create_milestone(
     """Create a milestone in a repository."""
     return _call("POST", "/repos/{owner}/{repo}/milestones", locals())
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_milestone(
     owner: str,
     repo: str,
@@ -1281,7 +1333,7 @@ def get_issue(owner: str, repo: str, index: int):
     """Get an issue by its index number."""
     return _call("GET", "/repos/{owner}/{repo}/issues/{index}", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_issue(
     owner: str,
     repo: str,
@@ -1299,7 +1351,7 @@ def create_issue(
     _validate_brief(body)
     return _call("POST", "/repos/{owner}/{repo}/issues", locals(), rename={"milestone_id": "milestone"})
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_issue(
     owner: str,
     repo: str,
@@ -1337,7 +1389,7 @@ def list_issue_comments(
         data = _slim_comments(data)
     return _ok(data)
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_issue_comment(
     owner: str,
     repo: str,
@@ -1351,7 +1403,7 @@ def create_issue_comment(
         )
     )
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_issue_comment(
     owner: str,
     repo: str,
@@ -1375,7 +1427,7 @@ def list_issue_labels(owner: str, repo: str, index: int):
     """List labels on an issue."""
     return _call("GET", "/repos/{owner}/{repo}/issues/{index}/labels", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def add_issue_labels(
     owner: str,
     repo: str,
@@ -1398,7 +1450,7 @@ def remove_issue_label(owner: str, repo: str, index: int, label_id: int):
     """Remove a label from an issue."""
     return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/labels/{label_id}", locals())
 
-@_op(gitea_update)
+@_op(gitea_write)
 def replace_issue_labels(
     owner: str,
     repo: str,
@@ -1416,7 +1468,7 @@ def replace_issue_labels(
         )
     )
 
-@_op(gitea_create)
+@_op(gitea_write)
 def set_issue_deadline(
     owner: str,
     repo: str,
@@ -1481,7 +1533,7 @@ def list_issue_dependencies(owner: str, repo: str, index: int):
     """List an issue's dependencies."""
     return _call("GET", "/repos/{owner}/{repo}/issues/{index}/dependencies", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def add_issue_dependency(
     owner: str,
     repo: str,
@@ -1515,7 +1567,7 @@ def remove_issue_dependency(
         )
     )
 
-@_op(gitea_create)
+@_op(gitea_write)
 def pin_issue(owner: str, repo: str, index: int):
     """Pin an issue in a repository."""
     return _ok(_get_client().post(f"/repos/{owner}/{repo}/issues/{index}/pin"))
@@ -1525,7 +1577,7 @@ def unpin_issue(owner: str, repo: str, index: int):
     """Unpin an issue in a repository."""
     return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/pin", locals())
 
-@_op(gitea_update)
+@_op(gitea_write)
 def lock_issue(owner: str, repo: str, index: int):
     """Lock an issue's conversation."""
     return _ok(_get_client().put(f"/repos/{owner}/{repo}/issues/{index}/lock", json={}))
@@ -1540,7 +1592,7 @@ def list_issue_subscriptions(owner: str, repo: str, index: int):
     """List users subscribed to an issue."""
     return _call("GET", "/repos/{owner}/{repo}/issues/{index}/subscriptions", locals())
 
-@_op(gitea_update)
+@_op(gitea_write)
 def subscribe_to_issue(owner: str, repo: str, index: int, user: str):
     """Subscribe a user to an issue."""
     return _ok(
@@ -1562,7 +1614,7 @@ def list_issue_reactions(owner: str, repo: str, index: int):
     """List reactions on an issue."""
     return _call("GET", "/repos/{owner}/{repo}/issues/{index}/reactions", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def add_issue_reaction(
     owner: str,
     repo: str,
@@ -1599,7 +1651,7 @@ def list_comment_reactions(owner: str, repo: str, comment_id: int):
     """List reactions on a comment."""
     return _call("GET", "/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def add_comment_reaction(
     owner: str,
     repo: str,
@@ -1641,7 +1693,7 @@ def list_tracked_times(owner: str, repo: str, index: int):
         _get_client().paginate(f"/repos/{owner}/{repo}/issues/{index}/times")
     )
 
-@_op(gitea_create)
+@_op(gitea_write)
 def add_tracked_time(
     owner: str,
     repo: str,
@@ -1658,14 +1710,14 @@ def delete_tracked_time(owner: str, repo: str, index: int, time_id: int):
     """Delete a tracked time entry from an issue."""
     return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/times/{time_id}", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def start_stopwatch(owner: str, repo: str, index: int):
     """Start a stopwatch on an issue."""
     return _ok(
         _get_client().post(f"/repos/{owner}/{repo}/issues/{index}/stopwatch/start")
     )
 
-@_op(gitea_create)
+@_op(gitea_write)
 def stop_stopwatch(owner: str, repo: str, index: int):
     """Stop a stopwatch on an issue."""
     return _ok(
@@ -1708,7 +1760,7 @@ def get_pull_request(owner: str, repo: str, index: int):
     """Get a pull request by index."""
     return _call("GET", "/repos/{owner}/{repo}/pulls/{index}", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_pull_request(
     owner: str,
     repo: str,
@@ -1727,7 +1779,7 @@ def create_pull_request(
     """Create a pull request."""
     return _call("POST", "/repos/{owner}/{repo}/pulls", locals(), rename={"milestone_id": "milestone"})
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_pull_request(
     owner: str,
     repo: str,
@@ -1747,7 +1799,7 @@ def edit_pull_request(
     """Edit a pull request."""
     return _call("PATCH", "/repos/{owner}/{repo}/pulls/{index}", locals())
 
-@_op(gitea_create)
+@_op(gitea_execute)
 def merge_pull_request(
     owner: str,
     repo: str,
@@ -1787,7 +1839,7 @@ def get_pull_request_commits(owner: str, repo: str, index: int):
         _get_client().paginate(f"/repos/{owner}/{repo}/pulls/{index}/commits")
     )
 
-@_op(gitea_create)
+@_op(gitea_write)
 def update_pull_request_branch(
     owner: str,
     repo: str,
@@ -1804,7 +1856,7 @@ def list_pull_reviews(owner: str, repo: str, index: int):
         _get_client().paginate(f"/repos/{owner}/{repo}/pulls/{index}/reviews")
     )
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_pull_review(
     owner: str,
     repo: str,
@@ -1822,7 +1874,7 @@ def create_pull_review(
     """Create a review on a pull request. Event can be: APPROVED, REQUEST_CHANGES, COMMENT, PENDING."""
     return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/reviews", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def submit_pull_review(
     owner: str,
     repo: str,
@@ -1834,7 +1886,7 @@ def submit_pull_review(
     """Submit a pending pull request review."""
     return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def request_pull_reviewers(
     owner: str,
     repo: str,
@@ -1849,7 +1901,7 @@ def request_pull_reviewers(
         )
     )
 
-@_op(gitea_create)
+@_op(gitea_write)
 def dismiss_pull_review(
     owner: str,
     repo: str,
@@ -1875,7 +1927,7 @@ def get_workflow(owner: str, repo: str, workflow_id: str):
         _get_client().get(f"/repos/{owner}/{repo}/actions/workflows/{workflow_id}")
     )
 
-@_op(gitea_create)
+@_op(gitea_execute)
 def dispatch_workflow(
     owner: str,
     repo: str,
@@ -1959,7 +2011,7 @@ def list_action_secrets(owner: str, repo: str):
         _get_client().paginate(f"/repos/{owner}/{repo}/actions/secrets")
     )
 
-@_op(gitea_update)
+@_op(gitea_write)
 def create_action_secret(
     owner: str,
     repo: str,
@@ -1997,7 +2049,7 @@ def get_action_variable(owner: str, repo: str, variable_name: str):
         )
     )
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_action_variable(
     owner: str,
     repo: str,
@@ -2012,7 +2064,7 @@ def create_action_variable(
         )
     )
 
-@_op(gitea_update)
+@_op(gitea_write)
 def update_action_variable(
     owner: str,
     repo: str,
@@ -2049,7 +2101,7 @@ def get_org(org: str):
     """Get an organization by name."""
     return _ok(_get_client().get(f"/orgs/{org}"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_org(
     username: Annotated[str, Field(description="Organization login (the org's short name / URL slug). Not an existing user — this names the new org.")],
     full_name: Optional[str] = None,
@@ -2061,7 +2113,7 @@ def create_org(
     visibility = _enforce_visibility(visibility)
     return _call("POST", "/orgs", locals())
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_org(
     org: str,
     full_name: Optional[str] = None,
@@ -2116,7 +2168,7 @@ def check_org_public_member(org: str, username: str):
     """Check if a user is a public member of an organization."""
     return _ok(_get_client().get(f"/orgs/{org}/public_members/{username}"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def set_org_public_member(org: str, username: str):
     """Publicize a user's membership in an organization."""
     return _ok(_get_client().put(f"/orgs/{org}/public_members/{username}"))
@@ -2126,7 +2178,7 @@ def remove_org_public_member(org: str, username: str):
     """Conceal a user's membership in an organization."""
     return _ok(_get_client().delete(f"/orgs/{org}/public_members/{username}"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_org_repo(
     org: str,
     name: Annotated[str, Field(description="Repository slug (URL-safe short name).")],
@@ -2160,7 +2212,7 @@ def get_team(team_id: int):
     """Get a team by ID."""
     return _ok(_get_client().get(f"/teams/{team_id}"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_team(
     org: str,
     name: Annotated[str, Field(description="Team name (unique within the org).")],
@@ -2176,7 +2228,7 @@ def create_team(
     """Create a team in an organization. Permission can be: read, write, admin. Units are like: repo.code, repo.issues, repo.pulls."""
     return _call("POST", "/orgs/{org}/teams", locals())
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_team(
     team_id: int,
     name: Optional[str] = None,
@@ -2202,7 +2254,7 @@ def list_team_members(team_id: int):
     """List members of a team."""
     return _ok(_get_client().paginate(f"/teams/{team_id}/members"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def add_team_member(team_id: int, username: str):
     """Add a member to a team."""
     return _ok(_get_client().put(f"/teams/{team_id}/members/{username}"))
@@ -2217,7 +2269,7 @@ def list_team_repos(team_id: int):
     """List repositories managed by a team."""
     return _ok(_get_client().paginate(f"/teams/{team_id}/repos"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def add_team_repo(team_id: int, org: str, repo: str):
     """Add a repository to a team."""
     return _ok(_get_client().put(f"/teams/{team_id}/repos/{org}/{repo}"))
@@ -2240,7 +2292,7 @@ def list_org_labels(org: str):
     """List labels for an organization."""
     return _ok(_get_client().paginate(f"/orgs/{org}/labels"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_org_label(
     org: str,
     name: Annotated[str, Field(description="Label name (unique within the org).")],
@@ -2250,7 +2302,7 @@ def create_org_label(
     """Create a label in an organization."""
     return _call("POST", "/orgs/{org}/labels", locals())
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_org_label(
     org: str,
     label_id: int,
@@ -2290,7 +2342,7 @@ def list_notifications(
         data = _slim_notifications(data)
     return _ok(data)
 
-@_op(gitea_update)
+@_op(gitea_write)
 def mark_notifications_read(
     last_read_at: Annotated[Optional[str], Field(description="ISO-8601 timestamp (e.g. '2026-05-20T12:00:00Z'). Notifications updated at or before this time are marked read. Defaults to now.")] = None,
 ):
@@ -2302,7 +2354,7 @@ def get_notification_thread(thread_id: int):
     """Get a notification thread by ID."""
     return _ok(_get_client().get(f"/notifications/threads/{thread_id}"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def mark_notification_read(thread_id: int):
     """Mark a notification thread as read."""
     return _ok(_get_client().patch(f"/notifications/threads/{thread_id}"))
@@ -2330,7 +2382,7 @@ def list_repo_notifications(
         data = _slim_notifications(data)
     return _ok(data)
 
-@_op(gitea_update)
+@_op(gitea_write)
 def mark_repo_notifications_read(
     owner: str,
     repo: str,
@@ -2357,7 +2409,7 @@ def get_wiki_page(owner: str, repo: str, page_name: str):
     """Get a wiki page by name."""
     return _ok(_get_client().get(f"/repos/{owner}/{repo}/wiki/page/{page_name}"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_wiki_page(
     owner: str,
     repo: str,
@@ -2374,7 +2426,7 @@ def create_wiki_page(
         _get_client().post(f"/repos/{owner}/{repo}/wiki/new", json=body)
     )
 
-@_op(gitea_update)
+@_op(gitea_write)
 def edit_wiki_page(
     owner: str,
     repo: str,
@@ -2679,17 +2731,17 @@ def delete_user_runner(runner_id: int):
     """Delete an action runner for the authenticated user."""
     return _ok(_get_client().delete(f"/user/actions/runners/{runner_id}"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_user_runner_token():
     """Get a user-level actions runner registration token."""
     return _ok(_get_client().post("/user/actions/runners/registration-token"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_repo_runner_token(owner: str, repo: str):
     """Get a repo-level actions runner registration token."""
     return _ok(_get_client().post(f"/repos/{owner}/{repo}/actions/runners/registration-token"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_org_runner_token(org: str):
     """Get an org-level actions runner registration token."""
     return _ok(_get_client().post(f"/orgs/{org}/actions/runners/registration-token"))
@@ -2702,7 +2754,7 @@ def list_org_action_secrets(org: str):
     """List action secrets for an organization."""
     return _ok(_get_client().paginate(f"/orgs/{org}/actions/secrets"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def create_org_action_secret(
     org: str,
     secret_name: Annotated[str, Field(description="Secret name. Must match `^[A-Z_][A-Z0-9_]*$` (Gitea constraint). Referenced from workflows via ${{ secrets.NAME }}.")],
@@ -2731,7 +2783,7 @@ def get_org_action_variable(org: str, variable_name: str):
     """Get an action variable for an organization."""
     return _ok(_get_client().get(f"/orgs/{org}/actions/variables/{variable_name}"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_org_action_variable(
     org: str,
     variable_name: Annotated[str, Field(description="Variable name. Must match `^[A-Z_][A-Z0-9_]*$` (Gitea constraint). Referenced from workflows via ${{ vars.NAME }}.")],
@@ -2745,7 +2797,7 @@ def create_org_action_variable(
         )
     )
 
-@_op(gitea_update)
+@_op(gitea_write)
 def update_org_action_variable(
     org: str,
     variable_name: Annotated[str, Field(description="Variable name to update (must already exist).")],
@@ -2772,7 +2824,7 @@ def list_user_action_secrets():
     """List action secrets for the current user."""
     return _ok(_get_client().paginate("/user/actions/secrets"))
 
-@_op(gitea_update)
+@_op(gitea_write)
 def create_user_action_secret(
     secret_name: Annotated[str, Field(description="Secret name. Must match `^[A-Z_][A-Z0-9_]*$` (Gitea constraint). Referenced from workflows via ${{ secrets.NAME }}.")],
     data: Annotated[str, Field(description="Secret PLAINTEXT value — Gitea encrypts it at rest. Not retrievable via API afterwards.")],
@@ -2800,7 +2852,7 @@ def get_user_action_variable(variable_name: str):
     """Get an action variable for the current user."""
     return _ok(_get_client().get(f"/user/actions/variables/{variable_name}"))
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_user_action_variable(
     variable_name: Annotated[str, Field(description="Variable name. Must match `^[A-Z_][A-Z0-9_]*$` (Gitea constraint). Referenced from workflows via ${{ vars.NAME }}.")],
     value: Annotated[str, Field(description="Variable value (plaintext — visible to workflow logs; use create_user_action_secret for sensitive data).")],
@@ -2813,7 +2865,7 @@ def create_user_action_variable(
         )
     )
 
-@_op(gitea_update)
+@_op(gitea_write)
 def update_user_action_variable(
     variable_name: Annotated[str, Field(description="Variable name to update (must already exist).")],
     value: Annotated[str, Field(description="New variable value (plaintext — visible to workflow logs).")],
@@ -2834,7 +2886,7 @@ def delete_user_action_variable(variable_name: str):
 # ── Misc ─────────────────────────────────────────────────────────────────────
 
 
-@_op(gitea_create)
+@_op(gitea_write)
 def render_markdown(
     text: Annotated[str, Field(description="Raw Markdown source to render.")],
     mode: Annotated[Optional[Literal["markdown", "comment", "wiki", "gfm"]], Field(description="Render mode. 'markdown' = strict CommonMark; 'gfm' = GitHub-flavored Markdown; 'comment' = issue/PR comment context; 'wiki' = wiki page context.")] = None,
@@ -2963,7 +3015,7 @@ def get_git_tree(
     """Get the tree for a commit SHA."""
     return _call("GET", "/repos/{owner}/{repo}/git/trees/{sha}", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def transfer_repo(
     owner: str,
     repo: str,
@@ -2973,7 +3025,7 @@ def transfer_repo(
     """Transfer a repository to another owner."""
     return _call("POST", "/repos/{owner}/{repo}/transfer", locals())
 
-@_op(gitea_create)
+@_op(gitea_write)
 def create_repo_from_template(
     template_owner: Annotated[str, Field(description="Owner (user/org) of the source template repository.")],
     template_repo: Annotated[str, Field(description="Name of the source template repository (must have `is_template` set).")],

@@ -1,85 +1,53 @@
-"""Test infrastructure: Docker Compose Gitea instance + MCP agent simulator."""
+"""Integration test fixtures.
+
+This conftest does NOT manage the Docker lifecycle. It assumes a Gitea
+instance is already running with a valid token recorded in `tests/.env`
+(produced by `scripts/bootstrap.py` — usually invoked via `npm run gitea:up`).
+
+Tests marked `@pytest.mark.integration` are skipped automatically if the env
+vars aren't present.
+"""
 
 from __future__ import annotations
 
 import json
-import subprocess
+import os
 import time
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
 
 from gitea_mcp.server import mcp, _all_grouped, _to_pascal
 
-COMPOSE_DIR = Path(__file__).parent
-GITEA_URL = "http://localhost:3000"
+TESTS_DIR = Path(__file__).parent
+ENV_FILE = TESTS_DIR / ".env"
+
+# Constants kept here so individual integration tests can still reference
+# the admin user without round-tripping through env.
 ADMIN_USER = "testadmin"
 ADMIN_PASS = "testadmin1234"
-ADMIN_EMAIL = "admin@test.local"
 
 
-# ── Docker Compose lifecycle ──────────────────────────────────────────────────
+def _load_env_file() -> None:
+    """Load GITEA_URL / GITEA_TOKEN / GITEA_ADMIN_* from tests/.env.
+
+    Called at collect-time so integration tests skip cleanly when nothing's
+    set up. `os.environ.setdefault` — explicit env vars win over file values.
+    """
+    if not ENV_FILE.exists():
+        return
+    for line in ENV_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
 
 
-def _compose(*args: str):
-    subprocess.run(
-        ["docker", "compose", *args],
-        cwd=COMPOSE_DIR,
-        check=True,
-        capture_output=True,
-    )
-
-
-def _docker_exec(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["docker", "compose", "exec", "-T", "-u", "git", "gitea", *args],
-        cwd=COMPOSE_DIR,
-        capture_output=True,
-        text=True,
-    )
-
-
-def _wait_for_gitea(timeout: int = 90):
-    """Poll Gitea until it's ready."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            r = httpx.get(f"{GITEA_URL}/api/v1/version", timeout=5)
-            if r.status_code == 200:
-                return
-        except Exception:
-            pass
-        time.sleep(2)
-    raise TimeoutError("Gitea did not start in time")
-
-
-def _create_admin_user() -> str:
-    """Create admin user via gitea CLI and return API token."""
-    # Create admin user via `gitea admin user create` inside the container
-    result = _docker_exec(
-        "gitea", "admin", "user", "create",
-        "--username", ADMIN_USER,
-        "--password", ADMIN_PASS,
-        "--email", ADMIN_EMAIL,
-        "--admin",
-        "--must-change-password=false",
-    )
-    # Ignore error if user already exists
-    if result.returncode != 0 and "already exists" not in (result.stderr + result.stdout):
-        raise RuntimeError(f"Failed to create admin user: stdout={result.stdout} stderr={result.stderr}")
-
-    # Create API token using basic auth
-    r = httpx.post(
-        f"{GITEA_URL}/api/v1/users/{ADMIN_USER}/tokens",
-        json={"name": "test-token", "scopes": ["all"]},
-        auth=(ADMIN_USER, ADMIN_PASS),
-        timeout=10,
-    )
-    r.raise_for_status()
-    data = r.json()
-    return data.get("sha1") or data.get("token")
+_load_env_file()
 
 
 # ── Agent simulator ───────────────────────────────────────────────────────────
@@ -118,7 +86,10 @@ class AgentSimulator:
             # Direct tool (ROOT group)
             fn = self._tools.get(tool_name)
             if fn is None:
-                raise ValueError(f"Unknown tool: {tool_name}. Available: {sorted(self._tools.keys())}")
+                raise ValueError(
+                    f"Unknown tool: {tool_name}. "
+                    f"Available: {sorted(self._tools.keys())}"
+                )
             result_str = fn(**kwargs)
 
         self.call_log.append({"tool": tool_name, "kwargs": kwargs, "result": result_str})
@@ -138,24 +109,18 @@ class AgentSimulator:
         else:
             fn = self._tools.get(tool_name)
             if fn is None:
-                raise ValueError(f"Unknown tool: {tool_name}")
+                raise ValueError(
+                    f"Unknown tool: {tool_name}. "
+                    f"Available: {sorted(self._tools.keys())}"
+                )
             result_str = fn(**kwargs)
-
         self.call_log.append({"tool": tool_name, "kwargs": kwargs, "result": result_str})
         return result_str
 
-    @property
-    def total_calls(self) -> int:
-        return len(self.call_log)
-
-    @property
-    def unique_tools_used(self) -> set[str]:
-        return {e["tool"] for e in self.call_log}
-
-    def print_log(self):
-        """Print the call log for debugging."""
-        for i, entry in enumerate(self.call_log):
-            print(f"\n[{i}] {entry['tool']}({entry['kwargs']})")
+    def print_call_log(self):
+        """Print all tool calls and their results for debugging."""
+        for entry in self.call_log:
+            print(f"call: {entry['tool']}({entry['kwargs']})")
             result = entry["result"]
             if len(str(result)) > 200:
                 print(f"  => {str(result)[:200]}...")
@@ -163,42 +128,123 @@ class AgentSimulator:
                 print(f"  => {result}")
 
 
+# ── Test helpers ──────────────────────────────────────────────────────────────
+
+
+def wait_for_pr_mergeable(
+    agent: "AgentSimulator",
+    owner: str,
+    repo: str,
+    index: int,
+    *,
+    timeout: float = 30.0,
+    interval: float = 1.0,
+) -> dict:
+    """Block until Gitea has computed the PR's `mergeable` flag.
+
+    Gitea derives `mergeable` asynchronously after PR creation. Calling
+    `/repos/{owner}/{repo}/pulls/{index}/merge` while it's still `null` gets
+    a misleading 405 with body `{"message": "Please try again later"}` — the
+    HTTP verb is fine, the merge engine just hasn't finished its test-merge
+    yet.
+
+    Polls `get_pull_request` every `interval` seconds for up to `timeout`.
+    Returns the final PR snapshot once `mergeable=True`. Three failure modes
+    surface as `AssertionError` (so the calling test fails loudly instead of
+    silently retrying forever or masking a real merge-blocking condition):
+
+      - mergeable=False before timeout — real obstruction (conflicts, draft,
+        branch protection). The caller would otherwise have gotten the same
+        405 on the next merge attempt; raising here points at the cause.
+      - PR moved to state='closed' / 'merged' while we were waiting —
+        someone else (or a hook) acted; merging again is a no-op or error.
+      - Timeout — `mergeable` never converged. Surfaces the last snapshot
+        so the failure message names what the polling saw.
+    """
+    deadline = time.monotonic() + timeout
+    last_pr: dict | None = None
+    while time.monotonic() < deadline:
+        pr = agent.call("get_pull_request", owner=owner, repo=repo, index=index)
+        last_pr = pr
+        state = pr.get("state")
+        if state in ("closed", "merged") or pr.get("merged"):
+            raise AssertionError(
+                f"PR #{index} is no longer open while waiting for mergeable: "
+                f"state={state!r}, merged={pr.get('merged')!r}. "
+                "Something else moved the PR before the test could merge it."
+            )
+        mergeable = pr.get("mergeable")
+        if mergeable is True:
+            return pr
+        if mergeable is False:
+            raise AssertionError(
+                f"PR #{index} reached mergeable=False before timeout: "
+                f"state={state!r}, "
+                f"has_merge_conflicts={pr.get('has_merge_conflicts')!r}, "
+                f"draft={pr.get('draft')!r}. Gitea will reject the merge."
+            )
+        time.sleep(interval)
+    snapshot = (
+        f"state={last_pr.get('state')!r}, "
+        f"mergeable={last_pr.get('mergeable')!r}, "
+        f"has_merge_conflicts={last_pr.get('has_merge_conflicts')!r}"
+        if last_pr else "no PR snapshot captured"
+    )
+    raise AssertionError(
+        f"PR #{index} mergeable status did not converge within {timeout}s. "
+        f"Last snapshot: {snapshot}. "
+        "Gitea's async mergeability checker did not finish; try increasing "
+        "the timeout or check the gitea logs."
+    )
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
-@pytest.fixture(scope="session")
-def gitea_instance():
-    """Start Gitea via Docker Compose, yield the URL, then tear down."""
-    _compose("up", "-d")
-    try:
-        _wait_for_gitea()
-        yield GITEA_URL
-    finally:
-        _compose("down", "-v")
+def _require_env(*names: str) -> dict[str, str]:
+    """Skip the calling integration test if any of the env vars are missing.
+
+    Docker lifecycle now lives in `scripts/bootstrap.py` (run via
+    `npm run gitea:up`); this fixture path just reads what bootstrap produced.
+    """
+    missing = [n for n in names if not os.environ.get(n)]
+    if missing:
+        pytest.skip(
+            f"Integration test requires env vars {missing}. "
+            f"Run `npm run gitea:up` to start Gitea and write tests/.env."
+        )
+    return {n: os.environ[n] for n in names}
 
 
 @pytest.fixture(scope="session")
-def gitea_token(gitea_instance):
-    """Create admin user and return API token."""
-    return _create_admin_user()
+def gitea_instance() -> str:
+    """URL of the running Gitea instance. Skips the test if env isn't set."""
+    return _require_env("GITEA_URL")["GITEA_URL"]
 
 
 @pytest.fixture(scope="session")
-def configure_env(gitea_instance, gitea_token):
-    """Set environment variables for GiteaClient."""
-    import os
+def gitea_token(gitea_instance: str) -> str:
+    """API token for the test instance. Skips the test if env isn't set."""
+    return _require_env("GITEA_TOKEN")["GITEA_TOKEN"]
 
+
+@pytest.fixture(scope="session")
+def configure_env(gitea_instance: str, gitea_token: str):
+    """Set process env so GiteaClient picks up the right URL/token,
+    enable public-repo creation for the test session, and reset the cached
+    client so subsequent calls use the fresh settings.
+
+    Mirrors the pre-split behaviour exactly — without `set_allow_public(True)`,
+    integration tests that create public repos start failing because the
+    production-default safeguard kicks in.
+    """
     os.environ["GITEA_URL"] = gitea_instance
     os.environ["GITEA_TOKEN"] = gitea_token
 
-    # Integration suite needs public-repo creation; production safeguard is
-    # set_allow_public(False) by default, overridden here for the test session.
     from gitea_mcp.config import set_allow_public
     set_allow_public(True)
 
-    # Reset the cached client so it picks up new env
     import gitea_mcp.tools as _tools
-
     _tools._client = None
     yield
     _tools._client = None
