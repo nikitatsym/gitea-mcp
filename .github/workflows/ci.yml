@@ -1,18 +1,54 @@
-name: Build & Publish
+name: CI
 
 on:
-  workflow_dispatch:
+  pull_request:
   push:
     branches: [main]
-    paths: ["src/**", "pyproject.toml", ".github/workflows/build.yml", "docs/**"]
 
 permissions:
   contents: write
   pages: write
   id-token: write
 
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
-  build:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        run: uv sync
+      - name: Unit tests
+        run: uv run pytest -m 'not integration' -v
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        run: uv sync
+      - name: Start Gitea
+        run: docker compose -f tests/docker-compose.yml up -d gitea
+      - name: Bootstrap admin + API token
+        run: uv run python scripts/bootstrap.py
+      - name: Integration tests
+        run: uv run pytest -m integration tests/test_integration.py -v
+      - name: Gitea logs (on failure)
+        if: failure()
+        run: docker compose -f tests/docker-compose.yml logs gitea
+      - name: Tear down
+        if: always()
+        run: docker compose -f tests/docker-compose.yml down -v
+
+  release:
+    needs: [unit, integration]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
