@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+import time
+
 import httpx
 
 from .config import get_settings
 
 _DEFAULT_LIMIT = 50
+
+_log = logging.getLogger("gitea_mcp.client")
 
 
 class GiteaError(Exception):
@@ -30,13 +35,23 @@ class GiteaClient:
     # ── low-level ────────────────────────────────────────────
 
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        start = time.perf_counter()
         r = self._http.request(method, path, **kwargs)
-        if r.status_code >= 400:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        status = r.status_code
+        if status >= 500:
+            level = logging.ERROR
+        elif status >= 400:
+            level = logging.WARNING
+        else:
+            level = logging.INFO
+        _log.log(level, "%s %s %d %dms", method, path, status, duration_ms)
+        if status >= 400:
             try:
                 body = r.json()
             except Exception:
                 body = r.text
-            raise GiteaError(r.status_code, method, path, body)
+            raise GiteaError(status, method, path, body)
         return r
 
     def _json(self, method: str, path: str, **kwargs):
