@@ -174,13 +174,16 @@ def wait_for_pr_mergeable(
                 "Something else moved the PR before the test could merge it."
             )
         mergeable = pr.get("mergeable")
+        has_conflicts = pr.get("has_merge_conflicts")
         if mergeable is True:
             return pr
-        if mergeable is False:
+        # Gitea flips mergeable to False before has_merge_conflicts converges;
+        # only trust False once conflicts is also set (True/False).
+        if mergeable is False and has_conflicts is not None:
             raise AssertionError(
                 f"PR #{index} reached mergeable=False before timeout: "
                 f"state={state!r}, "
-                f"has_merge_conflicts={pr.get('has_merge_conflicts')!r}, "
+                f"has_merge_conflicts={has_conflicts!r}, "
                 f"draft={pr.get('draft')!r}. Gitea will reject the merge."
             )
         time.sleep(interval)
