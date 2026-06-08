@@ -103,6 +103,9 @@ npm run test:integration
 
 # tear down
 npm run gitea:down
+
+# one-shot: up + integration + down (exits with the pytest status code)
+npm run test:integration:full
 ```
 
 `npm run gitea:bootstrap` is idempotent — re-running against an already-bootstrapped instance no-ops if `tests/.env` carries a still-valid token, otherwise deletes the named token and creates a fresh one. The bootstrap script (`scripts/bootstrap.py`) is also runnable directly via `uv run python scripts/bootstrap.py`.
