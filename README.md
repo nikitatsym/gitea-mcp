@@ -9,6 +9,7 @@ MCP server for Gitea -- full API coverage for autonomous AI agents.
 - File content management (create, read, update, delete)
 - Branches, tags, commits, and status checks
 - Actions / CI workflows and artifacts
+- **Long-running waiters** - `workflow_runs_wait` / `workflow_jobs_wait` block until a run or job finishes (streaming progress via MCP notifications); non-blocking `*_wait_start` / `*_wait_poll(max_block=...)` / `*_wait_cancel` + `waits_list` keep the agent responsive. Waits tolerate transient API errors (`max_poll_failures`, default 3 consecutive), background waits self-terminate after `max_lifetime` (default 2h), and all wait ops live in `gitea_read` - they only ever GET
 - Organizations, teams, and user management
 - Webhooks, deploy keys, notifications, wiki, packages
 - Admin endpoints for instance-level operations

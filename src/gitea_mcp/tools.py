@@ -1,18 +1,26 @@
 """Gitea tool operations. All public functions are auto-registered as MCP tools."""
 
+import asyncio
 import base64
+import logging
 import re
+import time
 from typing import Annotated, Literal, Optional
 
 from pydantic import Field
 
-from .client import GiteaClient
+from .client import GiteaClient, GiteaError
 from .prepare import (
     _ok, _body, _validate_brief, _enforce_private, _enforce_visibility,
     _slim_issues, _slim_repos, _slim_notifications, _slim_comments,
     _slim_commits, _slim_workflow_run, _slim_workflow_runs, _slim_job, _slim_jobs,
 )
 from .registry import ROOT, Group, _op
+from .wait_registry import (
+    TERMINAL_STATUSES as _WAIT_TERMINAL,
+    WAIT_REGISTRY as _WAIT_REGISTRY,
+    WaitHandle as _WaitHandle,
+)
 
 _client: Optional[GiteaClient] = None
 
@@ -1749,7 +1757,7 @@ def list_pull_requests(
     Set brief=False for full Gitea API response objects."""
     params = _body(locals(), exclude=("owner", "repo", "brief", "labels"))
     if labels is not None:
-        params["labels"] = ",".join(str(l) for l in labels)
+        params["labels"] = ",".join(str(label) for label in labels)
     data = _get_client().paginate(f"/repos/{owner}/{repo}/pulls", params=params or None)
     if brief:
         data = _slim_issues(data)
@@ -1999,7 +2007,7 @@ def get_workflow_job_logs(
     lines = text.splitlines()
     if filter:
         pat = re.compile(filter, re.IGNORECASE)
-        lines = [l for l in lines if pat.search(l)]
+        lines = [line for line in lines if pat.search(line)]
     if tail and tail > 0:
         lines = lines[-tail:]
     return "\n".join(lines)
@@ -3086,3 +3094,784 @@ def remove_pull_reviewers(
             json={"reviewers": reviewers},
         )
     )
+
+
+# ── Long-running waiters (Actions) ───────────────────────────────────────────
+#
+# The result dict is the source of truth; ctx progress/log are best-effort.
+# All wait ops live in gitea_read: a wait only ever GETs, and cancel stops
+# the local task, not the run. Pattern: mcp-server-v2 "Long-running waiters".
+
+
+_log_wait = logging.getLogger("gitea_mcp.wait")
+
+# One transient blip must not kill a minutes-long wait; fatal 4xx never heal.
+_MAX_POLL_FAILURES_DEFAULT = 3
+# Bounds orphan background waits (e.g. run stuck `waiting` with no runner).
+_MAX_LIFETIME_DEFAULT = 7200.0
+
+_TERMINAL_LOG_LEVEL: dict = {
+    "success": "info",
+    "failure": "error",
+    "cancelled": "warning",
+    "skipped": "warning",
+    "completed": "info",
+    "blocked": "info",
+}
+
+
+def _poll_error_is_fatal(e: Exception) -> bool:
+    """4xx (except 429) won't heal on retry; everything else is budgeted."""
+    return (
+        isinstance(e, GiteaError)
+        and 400 <= e.status < 500
+        and e.status != 429
+    )
+
+
+def _effective_status(payload) -> Optional[str]:
+    """Raw status while running; the conclusion once status == completed."""
+    if not isinstance(payload, dict):
+        return None
+    status = payload.get("status")
+    conclusion = payload.get("conclusion")
+    if status == "completed" and conclusion:
+        return conclusion
+    return status
+
+
+async def _emit_progress(ctx, progress: float, total, message: str) -> None:
+    """Best-effort progress emit - never breaks polling on transport errors."""
+    if ctx is None:
+        return
+    try:
+        await ctx.report_progress(progress=progress, total=total, message=message)
+    except Exception:  # noqa: BLE001 - progress is best-effort, never fatal
+        _log_wait.debug("report_progress failed", exc_info=True)
+
+
+async def _emit_log(ctx, level: str, message: str) -> None:
+    """Best-effort log emit - never breaks polling on transport errors."""
+    if ctx is None:
+        return
+    try:
+        await ctx.log(level=level, message=message)
+    except Exception:  # noqa: BLE001 - log notifications are best-effort
+        _log_wait.debug("ctx.log failed", exc_info=True)
+
+
+def _fetch_run_slim(owner: str, repo: str, run_id: int) -> dict:
+    return _slim_workflow_run(
+        _get_client().get(f"/repos/{owner}/{repo}/actions/runs/{run_id}")
+    )
+
+
+def _fetch_job_slim(owner: str, repo: str, job_id: int) -> dict:
+    return _slim_job(
+        _get_client().get(f"/repos/{owner}/{repo}/actions/jobs/{job_id}")
+    )
+
+
+def _fetch_run_jobs_slim(owner: str, repo: str, run_id: int) -> list:
+    jobs = _slim_jobs(
+        _get_client().get(f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs")
+    )
+    return jobs if isinstance(jobs, list) else []
+
+
+def _job_log_tail(owner: str, repo: str, job_id: int, tail: int) -> dict:
+    """Trailing job log with truncation metadata."""
+    text = _get_client().get_text(f"/repos/{owner}/{repo}/actions/jobs/{job_id}/logs")
+    lines = text.splitlines()
+    total = len(lines)
+    if tail and tail > 0:
+        lines = lines[-tail:]
+    return {
+        "text": "\n".join(lines),
+        "total_lines": total,
+        "tail": tail,
+        "truncated": total > len(lines),
+    }
+
+
+def _job_failed(job: dict) -> bool:
+    return (job.get("conclusion") or job.get("status")) == "failure"
+
+
+def _fetch_failed_job_logs(owner: str, repo: str, jobs: list, log_tail: int) -> dict:
+    """Trace tails per failed job; per-job errors absorbed into the entry."""
+    out: dict = {}
+    for j in jobs:
+        if not isinstance(j, dict) or not _job_failed(j):
+            continue
+        jid = j.get("id")
+        if jid is None:
+            continue
+        try:
+            out[jid] = _job_log_tail(owner, repo, jid, log_tail)
+        except Exception as e:  # noqa: BLE001 - surface as content, not abort
+            out[jid] = {"error": f"failed to fetch log: {e}"}
+    return out
+
+
+@_op(gitea_read)
+async def workflow_runs_wait(
+    owner: str,
+    repo: str,
+    run_id: int,
+    timeout: Annotated[float, Field(description="Max seconds to wait for a terminal status.")] = 600.0,
+    interval: Annotated[float, Field(description="Seconds between polls. Lower = faster reaction, more API calls.")] = 5.0,
+    max_poll_failures: Annotated[int, Field(description="Consecutive transient poll failures (network errors, 5xx, 429) tolerated before the wait fails. Other 4xx errors fail immediately.")] = _MAX_POLL_FAILURES_DEFAULT,
+    include_jobs: Annotated[bool, Field(description="When terminated, include the run's jobs in the response.")] = True,
+    include_failed_logs: Annotated[bool, Field(description="When include_jobs is true, also attach the trailing log of every failed job.")] = True,
+    log_tail: Annotated[int, Field(description="Number of trailing log lines to attach per failed job.")] = 100,
+    ctx=None,
+):
+    """Block until a workflow run reaches a terminal status.
+
+    Holds the MCP tool call open for the whole wait (up to `timeout`
+    seconds). If the agent should stay free to do other work during a long
+    CI run, use `workflow_runs_wait_start` + `workflow_runs_wait_poll
+    (max_block=...)` instead - same data, no long-held call.
+
+    Polls the run every `interval` seconds. Status reported is the
+    "effective" one: Gitea's `conclusion` once the run completes, the raw
+    `status` before that. Terminal: success, failure, cancelled, skipped,
+    completed, blocked (blocked = approval gate; it will not change without
+    an external approval). Transient poll failures (network errors, 5xx,
+    429) are tolerated up to `max_poll_failures` consecutive misses; other
+    4xx errors raise immediately. HTTP runs in a worker thread, so
+    concurrent tool calls are not stalled by a slow Gitea response.
+
+    Returns a dict:
+      run               slim workflow-run payload at the last poll
+      status            effective terminal status (or last seen on timeout)
+      terminated        True if a terminal status was reached
+      timed_out         True if `timeout` expired first
+      elapsed_seconds   wall-clock duration of the wait
+      polls             number of API calls made (incl. failed)
+      poll_failures     present when > 0: count of failed polls
+      last_poll_error   present alongside poll_failures: last failure text
+      jobs              list (when include_jobs=True) of slim jobs
+      failed_logs       dict[job_id, log] (when include_failed_logs=True)
+      enrichment_error  present if the post-wait jobs/log fetch failed
+    """
+    if timeout <= 0:
+        raise ValueError(f"timeout must be > 0, got {timeout}")
+    if interval <= 0:
+        raise ValueError(f"interval must be > 0, got {interval}")
+    if max_poll_failures < 1:
+        raise ValueError(f"max_poll_failures must be >= 1, got {max_poll_failures}")
+    if log_tail < 0:
+        raise ValueError(f"log_tail must be >= 0, got {log_tail}")
+
+    start = time.monotonic()
+    previous_status: Optional[str] = None
+    run: dict = {}
+    status: Optional[str] = None
+    polls = 0
+    poll_failures = 0
+    consecutive_failures = 0
+    last_poll_error: Optional[str] = None
+    terminated = False
+
+    while True:
+        elapsed = time.monotonic() - start
+        try:
+            run = await asyncio.to_thread(_fetch_run_slim, owner, repo, run_id)
+        except Exception as e:  # noqa: BLE001 - classified below
+            polls += 1
+            poll_failures += 1
+            consecutive_failures += 1
+            last_poll_error = str(e)
+            if _poll_error_is_fatal(e) or consecutive_failures >= max_poll_failures:
+                raise
+            await _emit_log(
+                ctx, "warning",
+                f"run #{run_id}: poll failed "
+                f"({consecutive_failures}/{max_poll_failures} consecutive), retrying: {e}",
+            )
+            if elapsed + interval >= timeout:
+                break
+            await asyncio.sleep(interval)
+            continue
+        polls += 1
+        consecutive_failures = 0
+        status = _effective_status(run)
+
+        if status != previous_status:
+            await _emit_progress(
+                ctx, progress=elapsed, total=timeout,
+                message=f"run #{run_id} status: {status}",
+            )
+            if previous_status is None:
+                await _emit_log(
+                    ctx, "info", f"run #{run_id}: starting wait (status={status})",
+                )
+            else:
+                await _emit_log(
+                    ctx, "info", f"run #{run_id}: {previous_status} -> {status}",
+                )
+            previous_status = status
+
+        if status in _WAIT_TERMINAL:
+            terminated = True
+            break
+
+        if elapsed + interval >= timeout:
+            break
+
+        await asyncio.sleep(interval)
+
+    elapsed_final = time.monotonic() - start
+    result: dict = {
+        "run": run,
+        "status": status,
+        "terminated": terminated,
+        "timed_out": not terminated,
+        "elapsed_seconds": round(elapsed_final, 2),
+        "polls": polls,
+    }
+    if poll_failures:
+        result["poll_failures"] = poll_failures
+        result["last_poll_error"] = last_poll_error
+
+    if terminated:
+        level = _TERMINAL_LOG_LEVEL.get(status or "", "info")
+        await _emit_log(
+            ctx, level,
+            f"run #{run_id} finished with status={status} "
+            f"after {polls} polls in {elapsed_final:.1f}s",
+        )
+    else:
+        await _emit_log(
+            ctx, "warning",
+            f"run #{run_id} did not reach a terminal status "
+            f"in {timeout}s (last status={status}, polls={polls})",
+        )
+
+    if include_jobs:
+        # A blip here must not discard a wait that already completed -
+        # absorb and report instead of raising away minutes of progress.
+        try:
+            jobs = await asyncio.to_thread(_fetch_run_jobs_slim, owner, repo, run_id)
+        except Exception as e:  # noqa: BLE001 - surface as content, not abort
+            result["enrichment_error"] = f"failed to fetch jobs: {e}"
+            jobs = None
+        if jobs is not None:
+            result["jobs"] = jobs
+            if include_failed_logs:
+                failed_logs = await asyncio.to_thread(
+                    _fetch_failed_job_logs, owner, repo, jobs, log_tail
+                )
+                result["failed_logs"] = failed_logs
+                if failed_logs:
+                    await _emit_log(
+                        ctx, "error",
+                        f"run #{run_id}: {len(failed_logs)} failed job(s); "
+                        f"trailing log attached (tail={log_tail})",
+                    )
+
+    return result
+
+
+@_op(gitea_read)
+async def workflow_jobs_wait(
+    owner: str,
+    repo: str,
+    job_id: int,
+    timeout: Annotated[float, Field(description="Max seconds to wait for a terminal status.")] = 600.0,
+    interval: Annotated[float, Field(description="Seconds between polls. Lower = faster reaction, more API calls.")] = 5.0,
+    max_poll_failures: Annotated[int, Field(description="Consecutive transient poll failures (network errors, 5xx, 429) tolerated before the wait fails. Other 4xx errors fail immediately.")] = _MAX_POLL_FAILURES_DEFAULT,
+    include_log: Annotated[bool, Field(description="Include the job's trailing log in the response when terminated.")] = True,
+    log_tail: Annotated[int, Field(description="Number of trailing log lines to attach (used when include_log is true).")] = 100,
+    ctx=None,
+):
+    """Block until a workflow job reaches a terminal status.
+
+    Holds the MCP tool call open for the whole wait (up to `timeout`
+    seconds). If the agent should stay free to do other work, use
+    `workflow_jobs_wait_start` + `workflow_jobs_wait_poll(max_block=...)`.
+
+    Same semantics as workflow_runs_wait (effective status, terminal set,
+    transient-failure budget); see its docstring. Returns a dict with `job`
+    instead of `run` and, when include_log=True, a structured `log`
+    ({text, total_lines, tail, truncated}).
+    """
+    if timeout <= 0:
+        raise ValueError(f"timeout must be > 0, got {timeout}")
+    if interval <= 0:
+        raise ValueError(f"interval must be > 0, got {interval}")
+    if max_poll_failures < 1:
+        raise ValueError(f"max_poll_failures must be >= 1, got {max_poll_failures}")
+    if log_tail < 0:
+        raise ValueError(f"log_tail must be >= 0, got {log_tail}")
+
+    start = time.monotonic()
+    previous_status: Optional[str] = None
+    job: dict = {}
+    status: Optional[str] = None
+    polls = 0
+    poll_failures = 0
+    consecutive_failures = 0
+    last_poll_error: Optional[str] = None
+    terminated = False
+
+    while True:
+        elapsed = time.monotonic() - start
+        try:
+            job = await asyncio.to_thread(_fetch_job_slim, owner, repo, job_id)
+        except Exception as e:  # noqa: BLE001 - classified below
+            polls += 1
+            poll_failures += 1
+            consecutive_failures += 1
+            last_poll_error = str(e)
+            if _poll_error_is_fatal(e) or consecutive_failures >= max_poll_failures:
+                raise
+            await _emit_log(
+                ctx, "warning",
+                f"job #{job_id}: poll failed "
+                f"({consecutive_failures}/{max_poll_failures} consecutive), retrying: {e}",
+            )
+            if elapsed + interval >= timeout:
+                break
+            await asyncio.sleep(interval)
+            continue
+        polls += 1
+        consecutive_failures = 0
+        status = _effective_status(job)
+
+        if status != previous_status:
+            await _emit_progress(
+                ctx, progress=elapsed, total=timeout,
+                message=f"job #{job_id} status: {status}",
+            )
+            if previous_status is None:
+                await _emit_log(
+                    ctx, "info", f"job #{job_id}: starting wait (status={status})",
+                )
+            else:
+                await _emit_log(
+                    ctx, "info", f"job #{job_id}: {previous_status} -> {status}",
+                )
+            previous_status = status
+
+        if status in _WAIT_TERMINAL:
+            terminated = True
+            break
+
+        if elapsed + interval >= timeout:
+            break
+
+        await asyncio.sleep(interval)
+
+    elapsed_final = time.monotonic() - start
+    result: dict = {
+        "job": job,
+        "status": status,
+        "terminated": terminated,
+        "timed_out": not terminated,
+        "elapsed_seconds": round(elapsed_final, 2),
+        "polls": polls,
+    }
+    if poll_failures:
+        result["poll_failures"] = poll_failures
+        result["last_poll_error"] = last_poll_error
+
+    if terminated:
+        level = _TERMINAL_LOG_LEVEL.get(status or "", "info")
+        await _emit_log(
+            ctx, level,
+            f"job #{job_id} finished with status={status} "
+            f"after {polls} polls in {elapsed_final:.1f}s",
+        )
+    else:
+        await _emit_log(
+            ctx, "warning",
+            f"job #{job_id} did not reach a terminal status "
+            f"in {timeout}s (last status={status}, polls={polls})",
+        )
+
+    if include_log:
+        try:
+            result["log"] = await asyncio.to_thread(
+                _job_log_tail, owner, repo, job_id, log_tail
+            )
+        except Exception as e:  # noqa: BLE001 - surface as content, not abort
+            result["log"] = {"error": f"failed to fetch log: {e}"}
+
+    return result
+
+
+# ── Non-blocking wait tools (start / poll / cancel) ──────────────────────────
+#
+# start returns wait_id immediately (background task), poll reads the
+# snapshot (max_block waits on an event), cancel stops the polling task
+# only. Each wait is also an MCP resource at gitea://waits/{wait_id}.
+
+
+async def _do_run_poll(handle: _WaitHandle) -> bool:
+    """One run poll; True if terminal. HTTP in a worker thread, handle
+    mutated back on the loop (single-writer)."""
+    payload = await asyncio.to_thread(
+        _fetch_run_slim, handle.owner, handle.repo, handle.target_id
+    )
+    handle.polls += 1
+    handle.last_payload = payload
+    handle.record_transition(_effective_status(payload))
+    return handle.status in _WAIT_TERMINAL
+
+
+async def _do_job_poll(handle: _WaitHandle) -> bool:
+    """One job poll. Updates handle, returns True if terminal."""
+    payload = await asyncio.to_thread(
+        _fetch_job_slim, handle.owner, handle.repo, handle.target_id
+    )
+    handle.polls += 1
+    handle.last_payload = payload
+    handle.record_transition(_effective_status(payload))
+    return handle.status in _WAIT_TERMINAL
+
+
+async def _enrich_run_final(handle: _WaitHandle) -> None:
+    """Attach jobs (+ failed-job logs) to final_extras after terminal."""
+    opts = handle.options
+    if not opts.get("include_jobs", True):
+        return
+    jobs = await asyncio.to_thread(
+        _fetch_run_jobs_slim, handle.owner, handle.repo, handle.target_id
+    )
+    handle.final_extras["jobs"] = jobs
+    if opts.get("include_failed_logs", True):
+        handle.final_extras["failed_logs"] = await asyncio.to_thread(
+            _fetch_failed_job_logs,
+            handle.owner, handle.repo, jobs, opts.get("log_tail", 100),
+        )
+
+
+async def _enrich_job_final(handle: _WaitHandle) -> None:
+    """Attach trailing job log to final_extras when include_log is set."""
+    opts = handle.options
+    if not opts.get("include_log", True):
+        return
+    try:
+        handle.final_extras["log"] = await asyncio.to_thread(
+            _job_log_tail,
+            handle.owner, handle.repo, handle.target_id, opts.get("log_tail", 100),
+        )
+    except Exception as e:  # noqa: BLE001 - surface as content, not abort
+        handle.final_extras["log"] = {"error": f"failed to fetch log: {e}"}
+
+
+async def _wait_loop(handle: _WaitHandle, do_poll, enrich_final) -> None:
+    """Shared background loop: budgeted transient failures, max_lifetime
+    cap, enrichment once terminal."""
+    interval = handle.options["interval"]
+    max_failures = handle.options.get("max_poll_failures", _MAX_POLL_FAILURES_DEFAULT)
+    max_lifetime = handle.options.get("max_lifetime", _MAX_LIFETIME_DEFAULT)
+    consecutive_failures = 0
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            if max_lifetime > 0 and (time.time() - handle.started_at) >= max_lifetime:
+                handle.mark_timed_out(
+                    f"exceeded max_lifetime {max_lifetime:g}s without reaching "
+                    f"a terminal status (last status={handle.status})"
+                )
+                return
+            try:
+                terminal = await do_poll(handle)
+            except Exception as e:  # noqa: BLE001 - classified below
+                consecutive_failures += 1
+                handle.record_poll_failure(str(e))
+                if _poll_error_is_fatal(e) or consecutive_failures >= max_failures:
+                    suffix = (
+                        f" ({consecutive_failures} consecutive failures)"
+                        if consecutive_failures > 1 else ""
+                    )
+                    handle.mark_terminated(error=f"poll failed: {e}{suffix}")
+                    return
+                continue
+            consecutive_failures = 0
+            if terminal:
+                try:
+                    await enrich_final(handle)
+                except Exception as e:  # noqa: BLE001 - enrichment is best-effort
+                    handle.final_extras["enrichment_error"] = str(e)
+                handle.mark_terminated()
+                return
+    except asyncio.CancelledError:
+        handle.mark_terminated(error="cancelled")
+        raise
+
+
+async def _run_loop(handle: _WaitHandle) -> None:
+    await _wait_loop(handle, _do_run_poll, _enrich_run_final)
+
+
+async def _job_loop(handle: _WaitHandle) -> None:
+    await _wait_loop(handle, _do_job_poll, _enrich_job_final)
+
+
+async def _cancel_handle(handle: _WaitHandle) -> None:
+    """Cancel the task; defensively mark cancelled if the loop's handler
+    never ran (cancel can land before the first await)."""
+    task = handle.task
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001 - defensive
+            pass
+    if not handle.done_event.is_set():
+        handle.mark_terminated(error="cancelled")
+
+
+def _require_handle(wait_id: str, expected_kind: str) -> _WaitHandle:
+    handle = _WAIT_REGISTRY.get(wait_id)
+    if handle is None:
+        raise ValueError(
+            f"Unknown wait_id: {wait_id!r}. Use WaitsList to enumerate "
+            "active or recently-finished waits."
+        )
+    if handle.kind != expected_kind:
+        raise ValueError(
+            f"wait_id {wait_id!r} is a {handle.kind} wait, not {expected_kind}. "
+            f"Use the matching *_wait_poll / *_wait_cancel operation."
+        )
+    return handle
+
+
+def _start_options_validate(interval, max_poll_failures, max_lifetime, log_tail):
+    if interval <= 0:
+        raise ValueError(f"interval must be > 0, got {interval}")
+    if max_poll_failures < 1:
+        raise ValueError(f"max_poll_failures must be >= 1, got {max_poll_failures}")
+    if max_lifetime < 0:
+        raise ValueError(f"max_lifetime must be >= 0, got {max_lifetime}")
+    if log_tail < 0:
+        raise ValueError(f"log_tail must be >= 0, got {log_tail}")
+
+
+@_op(gitea_read)
+async def workflow_runs_wait_start(
+    owner: str,
+    repo: str,
+    run_id: int,
+    interval: Annotated[float, Field(description="Seconds between background polls. Lower = faster reaction, more API calls.")] = 5.0,
+    max_poll_failures: Annotated[int, Field(description="Consecutive transient poll failures (network errors, 5xx, 429) tolerated by the background loop before the wait errors out. Other 4xx errors fail immediately.")] = _MAX_POLL_FAILURES_DEFAULT,
+    max_lifetime: Annotated[float, Field(description="Hard cap in seconds on the background wait's total runtime; when exceeded the wait stops with timed_out=True. 0 disables the cap.")] = _MAX_LIFETIME_DEFAULT,
+    include_jobs: Annotated[bool, Field(description="When the run terminates, attach the slim jobs list to the final snapshot.")] = True,
+    include_failed_logs: Annotated[bool, Field(description="When include_jobs is true, also attach trailing logs of failed jobs.")] = True,
+    log_tail: Annotated[int, Field(description="Number of trailing log lines to attach per failed job.")] = 100,
+):
+    """Start a non-blocking wait for a workflow run to reach a terminal status.
+
+    Returns a `wait_id` + snapshot immediately so the agent stays
+    unblocked. The first poll runs inline so the snapshot carries real
+    status (and fails fast on a wrong ID / no access); if the run is
+    already terminal, no background task is spawned and the snapshot
+    includes full enrichment.
+
+    Observe with `workflow_runs_wait_poll(wait_id, max_block=...)` or read
+    the resource at `gitea://waits/{wait_id}`. Stop with
+    `workflow_runs_wait_cancel(wait_id)` - that stops the polling task,
+    NOT the workflow run.
+
+    Returns the same snapshot shape as `workflow_runs_wait_poll`.
+    """
+    _start_options_validate(interval, max_poll_failures, max_lifetime, log_tail)
+    _WAIT_REGISTRY.reap_old()
+
+    options = {
+        "interval": interval,
+        "max_poll_failures": max_poll_failures,
+        "max_lifetime": max_lifetime,
+        "include_jobs": include_jobs,
+        "include_failed_logs": include_failed_logs,
+        "log_tail": log_tail,
+    }
+    handle = _WAIT_REGISTRY.new_handle("run", owner, repo, run_id, options)
+
+    try:
+        terminal = await _do_run_poll(handle)
+    except Exception as e:  # noqa: BLE001 - reported via snapshot
+        handle.mark_terminated(error=f"initial poll failed: {e}")
+        return handle.snapshot()
+
+    if terminal:
+        try:
+            await _enrich_run_final(handle)
+        except Exception as e:  # noqa: BLE001 - enrichment is best-effort
+            handle.final_extras["enrichment_error"] = str(e)
+        handle.mark_terminated()
+        return handle.snapshot()
+
+    handle.task = asyncio.create_task(_run_loop(handle))
+    return handle.snapshot()
+
+
+@_op(gitea_read)
+async def workflow_runs_wait_poll(
+    wait_id: str,
+    max_block: Annotated[float, Field(description="If > 0 and the wait is still in flight, block up to this many seconds waiting for the terminal event. 0 (default) returns the current snapshot immediately.")] = 0.0,
+):
+    """Read the current snapshot of a workflow-run wait.
+
+    With `max_block=0` (default) this is non-blocking. With `max_block > 0`
+    it waits up to that many seconds for the wait to terminate, using an
+    asyncio.Event under the hood so the caller doesn't spin.
+
+    Snapshot fields: wait_id, resource_uri, kind, owner, repo, run_id,
+    status (effective: conclusion once completed), terminated, timed_out
+    (True if this poll's max_block elapsed before terminal, or the wait
+    gave up after max_lifetime - then `error` is set too), polls,
+    poll_failures + last_poll_error (when failures happened), transitions,
+    run (latest slim payload), started_at / ended_at / elapsed_seconds,
+    jobs / failed_logs (only when terminated), error.
+    """
+    if max_block < 0:
+        raise ValueError(f"max_block must be >= 0, got {max_block}")
+    handle = _require_handle(wait_id, expected_kind="run")
+    if max_block > 0 and not handle.done_event.is_set():
+        try:
+            await asyncio.wait_for(handle.done_event.wait(), timeout=max_block)
+        except asyncio.TimeoutError:
+            snap = handle.snapshot()
+            snap["timed_out"] = True
+            return snap
+    return handle.snapshot()
+
+
+@_op(gitea_read)
+async def workflow_runs_wait_cancel(wait_id: str):
+    """Cancel a workflow-run wait. The snapshot remains readable; error="cancelled".
+
+    Idempotent on an already-terminal wait. Cancellation only stops the
+    background polling task; it does NOT cancel the workflow run itself.
+    """
+    handle = _require_handle(wait_id, expected_kind="run")
+    if handle.done_event.is_set():
+        return handle.snapshot()
+    await _cancel_handle(handle)
+    return handle.snapshot()
+
+
+@_op(gitea_read)
+async def workflow_jobs_wait_start(
+    owner: str,
+    repo: str,
+    job_id: int,
+    interval: Annotated[float, Field(description="Seconds between background polls.")] = 5.0,
+    max_poll_failures: Annotated[int, Field(description="Consecutive transient poll failures tolerated by the background loop before the wait errors out. Other 4xx errors fail immediately.")] = _MAX_POLL_FAILURES_DEFAULT,
+    max_lifetime: Annotated[float, Field(description="Hard cap in seconds on the background wait's total runtime; when exceeded the wait stops with timed_out=True. 0 disables the cap.")] = _MAX_LIFETIME_DEFAULT,
+    include_log: Annotated[bool, Field(description="On termination, attach the job's trailing log to the final snapshot.")] = True,
+    log_tail: Annotated[int, Field(description="Number of trailing log lines to attach.")] = 100,
+):
+    """Start a non-blocking wait for a workflow job to reach a terminal status.
+
+    Returns a handle immediately. See `workflow_runs_wait_start` for the
+    same pattern (including `max_poll_failures` / `max_lifetime`); observe
+    with `workflow_jobs_wait_poll(wait_id, max_block=...)` or read the
+    resource at `gitea://waits/{wait_id}`.
+    """
+    _start_options_validate(interval, max_poll_failures, max_lifetime, log_tail)
+    _WAIT_REGISTRY.reap_old()
+
+    options = {
+        "interval": interval,
+        "max_poll_failures": max_poll_failures,
+        "max_lifetime": max_lifetime,
+        "include_log": include_log,
+        "log_tail": log_tail,
+    }
+    handle = _WAIT_REGISTRY.new_handle("job", owner, repo, job_id, options)
+
+    try:
+        terminal = await _do_job_poll(handle)
+    except Exception as e:  # noqa: BLE001 - reported via snapshot
+        handle.mark_terminated(error=f"initial poll failed: {e}")
+        return handle.snapshot()
+
+    if terminal:
+        try:
+            await _enrich_job_final(handle)
+        except Exception as e:  # noqa: BLE001 - enrichment is best-effort
+            handle.final_extras["enrichment_error"] = str(e)
+        handle.mark_terminated()
+        return handle.snapshot()
+
+    handle.task = asyncio.create_task(_job_loop(handle))
+    return handle.snapshot()
+
+
+@_op(gitea_read)
+async def workflow_jobs_wait_poll(
+    wait_id: str,
+    max_block: Annotated[float, Field(description="If > 0, block up to this many seconds waiting for terminal. 0 returns the current snapshot immediately.")] = 0.0,
+):
+    """Read the current snapshot of a workflow-job wait. Mirrors `workflow_runs_wait_poll`."""
+    if max_block < 0:
+        raise ValueError(f"max_block must be >= 0, got {max_block}")
+    handle = _require_handle(wait_id, expected_kind="job")
+    if max_block > 0 and not handle.done_event.is_set():
+        try:
+            await asyncio.wait_for(handle.done_event.wait(), timeout=max_block)
+        except asyncio.TimeoutError:
+            snap = handle.snapshot()
+            snap["timed_out"] = True
+            return snap
+    return handle.snapshot()
+
+
+@_op(gitea_read)
+async def workflow_jobs_wait_cancel(wait_id: str):
+    """Cancel a workflow-job wait. Mirrors `workflow_runs_wait_cancel`."""
+    handle = _require_handle(wait_id, expected_kind="job")
+    if handle.done_event.is_set():
+        return handle.snapshot()
+    await _cancel_handle(handle)
+    return handle.snapshot()
+
+
+@_op(gitea_read)
+def waits_list(
+    kind: Annotated[Optional[str], Field(description="Filter by kind: 'run' or 'job'. Omit to list both.")] = None,
+    terminated: Annotated[Optional[bool], Field(description="Filter by termination state. Omit to list all.")] = None,
+):
+    """List active and recently-terminal waits known to this server.
+
+    Returns compact dicts (no payload, no jobs, no logs) so the agent can
+    recover after losing a wait_id: wait_id, resource_uri, kind, owner,
+    repo, target_id, status, terminated, timed_out, polls,
+    elapsed_seconds, started_at, ended_at, error.
+
+    The registry has a TTL (1 hour after termination); after that entries
+    are reaped and no longer listed.
+    """
+    if kind is not None and kind not in ("run", "job"):
+        raise ValueError(f"kind must be 'run' or 'job' or None, got {kind!r}")
+    out: list = []
+    for handle in _WAIT_REGISTRY.all_handles():
+        if kind is not None and handle.kind != kind:
+            continue
+        if terminated is not None and handle.terminated != terminated:
+            continue
+        target_key = "run_id" if handle.kind == "run" else "job_id"
+        out.append({
+            "wait_id": handle.wait_id,
+            "resource_uri": f"gitea://waits/{handle.wait_id}",
+            "kind": handle.kind,
+            "owner": handle.owner,
+            "repo": handle.repo,
+            target_key: handle.target_id,
+            "status": handle.status,
+            "terminated": handle.terminated,
+            "timed_out": handle.timed_out,
+            "polls": handle.polls,
+            "elapsed_seconds": handle.elapsed_seconds,
+            "started_at": handle.started_at,
+            "ended_at": handle.ended_at,
+            "error": handle.error,
+        })
+    return out

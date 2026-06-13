@@ -22,7 +22,12 @@ class GiteaError(Exception):
 
 
 class GiteaClient:
-    def __init__(self, base_url: str | None = None, token: str | None = None):
+    def __init__(
+        self,
+        base_url: str | None = None,
+        token: str | None = None,
+        transport: httpx.BaseTransport | None = None,
+    ):
         s = get_settings()
         self._base = (base_url or s.gitea_url).rstrip("/")
         self._token = token or s.gitea_token
@@ -30,6 +35,7 @@ class GiteaClient:
             base_url=f"{self._base}/api/v1",
             headers={"Authorization": f"token {self._token}"},
             timeout=30.0,
+            transport=transport,
         )
 
     # ── low-level ────────────────────────────────────────────
