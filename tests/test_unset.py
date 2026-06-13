@@ -8,7 +8,6 @@ have something to lean on.
 
 from __future__ import annotations
 
-import pytest
 
 from gitea_mcp.prepare import _body
 from gitea_mcp.registry import _UNSET, _Unset

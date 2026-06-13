@@ -127,7 +127,7 @@ def _slim_issue(issue: dict) -> dict:
         "title": issue.get("title"),
         "state": issue.get("state"),
         "brief": _extract_brief(issue.get("body")),
-        "labels": [l["name"] for l in issue.get("labels") or []],
+        "labels": [label["name"] for label in issue.get("labels") or []],
         "assignee": issue["assignee"]["login"] if issue.get("assignee") else None,
         "updated_at": issue.get("updated_at"),
     }
