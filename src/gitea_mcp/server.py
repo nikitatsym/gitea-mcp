@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import inspect
+import json as _json
 import types
 import typing
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -19,10 +20,15 @@ from pydantic import (
 from pydantic_core import PydanticUndefined
 
 from . import tools as _tools_module
-from .client import GiteaError
 from .registry import ROOT, _UNSET, _Unset
 
 mcp = FastMCP("gitea")
+
+# Functions may declare a `ctx` parameter to receive the live MCP Context
+# (progress / log notifications). It is injected by `_coerce_call`, never
+# part of the Pydantic params model - callers can't pass it themselves and
+# it never leaks into help or schema output.
+_CTX_PARAM = "ctx"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -48,6 +54,8 @@ def _build_params_model(fn) -> type[BaseModel]:
     sig = inspect.signature(fn)
     fields: dict[str, Any] = {}
     for name, param in sig.parameters.items():
+        if name == _CTX_PARAM:
+            continue
         ann = hints.get(name, Any)
         if param.default is inspect.Parameter.empty:
             fields[name] = (ann, ...)
@@ -98,20 +106,27 @@ def _format_validation_error(err: ValidationError, op_name: str) -> str:
     return "\n".join(lines)
 
 
-def _coerce_call(fn, params: dict, op_name: str):
+def _coerce_call(fn, params: dict, op_name: str, ctx: Context | None = None):
     """Validate params via the function's Pydantic model, then call fn.
 
     Field-level type mismatches, missing required fields, and unknown keys all
     raise ValueError pointing at the offending field. No silent coercion of
     unrelated types — Pydantic 2 default mode coerces only sane conversions
     (e.g. numeric str → int) and rejects nonsense (e.g. 'frontend' → int).
+
+    When the target function declares a `ctx` parameter, the live MCP
+    Context (when present) is injected after validation. Async functions
+    return their coroutine as-is — the meta-tool awaits it.
     """
     model: type[BaseModel] = fn._params_model
     try:
         validated = model.model_validate(params)
     except ValidationError as e:
         raise ValueError(_format_validation_error(e, op_name)) from e
-    return fn(**validated.model_dump(exclude_unset=True))
+    kwargs = validated.model_dump(exclude_unset=True)
+    if _CTX_PARAM in inspect.signature(fn).parameters:
+        kwargs[_CTX_PARAM] = ctx
+    return fn(**kwargs)
 
 
 # ── Type rendering for help text ─────────────────────────────────────────────
@@ -267,7 +282,7 @@ def _build_schema(group_name: str, op_name: str | None) -> dict:
     if op_name is None:
         return {
             "operations": sorted(ops.keys()),
-            "hint": f"Pass params={{'op': '<OpName>'}} to get the full JSON Schema.",
+            "hint": "Pass params={'op': '<OpName>'} to get the full JSON Schema.",
         }
     if op_name not in ops:
         raise ValueError(
@@ -283,8 +298,13 @@ def _build_schema(group_name: str, op_name: str | None) -> dict:
     return schema
 
 
-def _dispatch(operation: str, group_name: str, params: dict):
-    """Route an operation call: schema/help-aware, fails loud on anything wrong."""
+def _dispatch(operation: str, group_name: str, params: dict, ctx: Context | None = None):
+    """Route an operation call: schema/help-aware, fails loud on anything wrong.
+
+    Async ops (the waiters) return a coroutine which is returned as-is —
+    the meta-tool `tool_fn` awaits it. Sync callers dispatching an async op
+    directly must `asyncio.run(...)` the result themselves.
+    """
     if operation == "schema":
         return _build_schema(group_name, params.get("op"))
     ops = _group_ops[group_name]
@@ -299,7 +319,7 @@ def _dispatch(operation: str, group_name: str, params: dict):
             f"Unknown operation {operation!r} in {group_name}. "
             "Use operation='help' to list or operation='schema' for details."
         )
-    return _coerce_call(ops[operation], params, operation)
+    return _coerce_call(ops[operation], params, operation, ctx)
 
 
 # ── Registration ─────────────────────────────────────────────────────────────
@@ -328,17 +348,50 @@ def _register_tools():
             _all_grouped[pascal_name] = group_name
 
         def _make_tool(gname, gdoc):
-            def tool_fn(operation: str, params: dict | None = None):
+            # Async by design so tools that need the MCP Context (progress /
+            # log) can `await ctx.report_progress(...)` inside their dispatch
+            # path. Sync ops still work — we only await actual coroutines.
+            # `ctx` is typed `Context` so FastMCP injects the live request
+            # context; it never appears in the tool's JSON schema.
+            async def tool_fn(
+                operation: str,
+                params: dict | None = None,
+                ctx: Context | None = None,
+            ):
                 params = params or {}
                 if operation == "help":
                     return _build_help(gname, search=params.get("search"))
-                return _dispatch(operation, gname, params)
+                result = _dispatch(operation, gname, params, ctx)
+                if inspect.iscoroutine(result):
+                    result = await result
+                return result
             tool_fn.__name__ = gname
             tool_fn.__qualname__ = gname
             tool_fn.__doc__ = gdoc
             return tool_fn
 
         mcp.tool()(_make_tool(group_name, group.doc))
+
+    from .wait_registry import WAIT_REGISTRY as _WAIT_REGISTRY
+
+    @mcp.resource(
+        "gitea://waits/{wait_id}",
+        name="Gitea wait snapshot",
+        description=(
+            "JSON snapshot of a long-running wait operation registered by "
+            "workflow_runs_wait_start or workflow_jobs_wait_start. Same "
+            "shape as the return value of the corresponding *_wait_poll tool."
+        ),
+        mime_type="application/json",
+    )
+    def _read_wait(wait_id: str) -> str:
+        handle = _WAIT_REGISTRY.get(wait_id)
+        if handle is None:
+            return _json.dumps({
+                "error": f"unknown wait_id: {wait_id!r}",
+                "hint": "Use the WaitsList operation to enumerate known waits.",
+            })
+        return _json.dumps(handle.snapshot(), default=str)
 
 
 _register_tools()
