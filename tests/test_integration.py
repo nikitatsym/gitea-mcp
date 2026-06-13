@@ -1894,18 +1894,9 @@ jobs:
 
     # ── 38. Deploy keys ───────────────────────────────────────
 
-    def test_270_deploy_keys(self, agent):
+    def test_270_deploy_keys(self, agent, ssh_pubkey):
         """Agent manages deploy keys."""
-        # Generate a test SSH key for deploy key
-        import subprocess
-        proc = subprocess.run(
-            ["ssh-keygen", "-t", "ed25519", "-f", "/tmp/test_deploy_key", "-N", "", "-q"],
-            capture_output=True,
-        )
-        if proc.returncode != 0:
-            pytest.skip("ssh-keygen not available")
-        with open("/tmp/test_deploy_key.pub") as f:
-            pub_key = f.read().strip()
+        pub_key = ssh_pubkey
 
         result = agent.call("create_deploy_key",
             owner=self.owner, repo=self.repo_name,
@@ -1933,17 +1924,9 @@ jobs:
 
     # ── 39. SSH keys ──────────────────────────────────────────
 
-    def test_271_ssh_keys(self, agent):
+    def test_271_ssh_keys(self, agent, ssh_pubkey):
         """Agent manages user SSH keys."""
-        import subprocess
-        proc = subprocess.run(
-            ["ssh-keygen", "-t", "ed25519", "-f", "/tmp/test_ssh_key", "-N", "", "-q"],
-            capture_output=True,
-        )
-        if proc.returncode != 0:
-            pytest.skip("ssh-keygen not available")
-        with open("/tmp/test_ssh_key.pub") as f:
-            pub_key = f.read().strip()
+        pub_key = ssh_pubkey
 
         result = agent.call("create_ssh_key",
             title="test-ssh-key",
@@ -2318,17 +2301,9 @@ jobs:
         except Exception:
             pass
 
-    def test_354_admin_user_public_keys(self, agent):
+    def test_354_admin_user_public_keys(self, agent, ssh_pubkey):
         """Agent manages user public keys via admin API."""
-        import subprocess
-        proc = subprocess.run(
-            ["ssh-keygen", "-t", "ed25519", "-f", "/tmp/test_admin_key", "-N", "", "-q"],
-            capture_output=True,
-        )
-        if proc.returncode != 0:
-            pytest.skip("ssh-keygen not available")
-        with open("/tmp/test_admin_key.pub") as f:
-            pub_key = f.read().strip()
+        pub_key = ssh_pubkey
 
         try:
             result = agent.call("admin_create_user_public_key",
