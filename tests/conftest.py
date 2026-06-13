@@ -4,14 +4,19 @@ This conftest does NOT manage the Docker lifecycle. It assumes a Gitea
 instance is already running with a valid token recorded in `tests/.env`
 (produced by `scripts/bootstrap.py` — usually invoked via `npm run gitea:up`).
 
-Tests marked `@pytest.mark.integration` are skipped automatically if the env
-vars aren't present.
+Integration tests are opt-in (deselected by default). When explicitly
+selected without a running instance they fail loudly (see
+pytest_collection_modifyitems), never skip silently into a false green.
 """
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import os
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -32,8 +37,8 @@ ADMIN_PASS = "testadmin1234"
 def _load_env_file() -> None:
     """Load GITEA_URL / GITEA_TOKEN / GITEA_ADMIN_* from tests/.env.
 
-    Called at collect-time so integration tests skip cleanly when nothing's
-    set up. `os.environ.setdefault` — explicit env vars win over file values.
+    Called at collect-time so a selected integration suite picks up the
+    bootstrap env. `os.environ.setdefault` — explicit env vars win.
     """
     if not ENV_FILE.exists():
         return
@@ -48,6 +53,18 @@ def _load_env_file() -> None:
 
 
 _load_env_file()
+
+
+@pytest.hookimpl(trylast=True)  # after pytest's own -m deselection prunes items
+def pytest_collection_modifyitems(config, items):
+    # Selected integration tests with no instance must fail, not skip to false green.
+    selected = [it for it in items if it.get_closest_marker("integration")]
+    missing = [n for n in ("GITEA_URL", "GITEA_TOKEN") if not os.environ.get(n)]
+    if selected and missing:
+        raise pytest.UsageError(
+            f"{len(selected)} integration test(s) selected but {missing} not set. "
+            "Run `npm run gitea:up` first."
+        )
 
 
 # ── Agent simulator ───────────────────────────────────────────────────────────
@@ -72,40 +89,23 @@ class AgentSimulator:
             self._tools[tool.name] = tool.fn
 
     def call(self, tool_name: str, **kwargs) -> Any:
-        """Call an MCP tool by name and return parsed result.
+        """Call an MCP tool by name and return parsed result."""
+        result = self.call_raw(tool_name, **kwargs)
+        try:
+            return json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return result
 
-        Converts snake_case tool_name to PascalCase operation, finds the
-        correct meta-tool group, and dispatches with kwargs as params dict.
+    def call_raw(self, tool_name: str, **kwargs) -> Any:
+        """Call an MCP tool and return its raw result.
+
+        Converts snake_case to the PascalCase operation and dispatches via
+        the right meta-tool group (or a ROOT tool directly).
         """
         pascal = _to_pascal(tool_name)
         if pascal in _all_grouped:
-            group = _all_grouped[pascal]
-            fn = self._tools[group]
-            result_str = fn(operation=pascal, params=kwargs)
-        else:
-            # Direct tool (ROOT group)
-            fn = self._tools.get(tool_name)
-            if fn is None:
-                raise ValueError(
-                    f"Unknown tool: {tool_name}. "
-                    f"Available: {sorted(self._tools.keys())}"
-                )
-            result_str = fn(**kwargs)
-
-        self.call_log.append({"tool": tool_name, "kwargs": kwargs, "result": result_str})
-
-        try:
-            return json.loads(result_str)
-        except (json.JSONDecodeError, TypeError):
-            return result_str
-
-    def call_raw(self, tool_name: str, **kwargs) -> str:
-        """Call an MCP tool and return raw string result."""
-        pascal = _to_pascal(tool_name)
-        if pascal in _all_grouped:
-            group = _all_grouped[pascal]
-            fn = self._tools[group]
-            result_str = fn(operation=pascal, params=kwargs)
+            fn = self._tools[_all_grouped[pascal]]
+            result = fn(operation=pascal, params=kwargs)
         else:
             fn = self._tools.get(tool_name)
             if fn is None:
@@ -113,9 +113,11 @@ class AgentSimulator:
                     f"Unknown tool: {tool_name}. "
                     f"Available: {sorted(self._tools.keys())}"
                 )
-            result_str = fn(**kwargs)
-        self.call_log.append({"tool": tool_name, "kwargs": kwargs, "result": result_str})
-        return result_str
+            result = fn(**kwargs)
+        if inspect.iscoroutine(result):
+            result = asyncio.run(result)  # meta-tools are async; tests call sync
+        self.call_log.append({"tool": tool_name, "kwargs": kwargs, "result": result})
+        return result
 
     def print_call_log(self):
         """Print all tool calls and their results for debugging."""
@@ -258,3 +260,14 @@ def configure_env(gitea_instance: str, gitea_token: str):
 def agent(configure_env) -> AgentSimulator:
     """Return an AgentSimulator connected to the test Gitea instance."""
     return AgentSimulator()
+
+
+@pytest.fixture
+def ssh_pubkey() -> str:
+    # Fresh temp dir per call so re-runs don't hit ssh-keygen's overwrite prompt.
+    path = Path(tempfile.mkdtemp()) / "key"
+    subprocess.run(
+        ["ssh-keygen", "-t", "ed25519", "-f", str(path), "-N", "", "-q"],
+        check=True,
+    )
+    return path.with_suffix(".pub").read_text().strip()
