@@ -278,7 +278,7 @@ jobs:
     def test_41_list_labels(self, agent):
         """Agent lists labels."""
         result = agent.call("list_repo_labels", owner=self.owner, repo=self.repo_name)
-        assert any(l["name"] == "bug" for l in result)
+        assert any(label["name"] == "bug" for label in result)
 
     def test_42_create_milestone(self, agent):
         """Agent creates a milestone."""
@@ -571,7 +571,7 @@ jobs:
         from conftest import wait_for_pr_mergeable
         wait_for_pr_mergeable(agent, self.owner, self.repo_name, self.pr_index)
 
-        result = agent.call("merge_pull_request",
+        agent.call("merge_pull_request",
             owner=self.owner,
             repo=self.repo_name,
             index=self.pr_index,
@@ -890,7 +890,7 @@ jobs:
         assert result["name"] == "priority:high"
 
         labels = agent.call("list_org_labels", org=self.org_name)
-        assert any(l["name"] == "priority:high" for l in labels)
+        assert any(label["name"] == "priority:high" for label in labels)
 
     # ── 15. Notifications ─────────────────────────────────────
 
@@ -2688,7 +2688,7 @@ jobs:
 
     def test_999_delete_repo(self, agent):
         """Agent deletes the test repo."""
-        result = agent.call("delete_repo", owner=self.owner, repo=self.repo_name)
+        agent.call("delete_repo", owner=self.owner, repo=self.repo_name)
         # Verify deletion
         try:
             agent.call("get_repo", owner=self.owner, repo=self.repo_name)

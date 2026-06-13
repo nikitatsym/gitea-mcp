@@ -5,7 +5,6 @@ import importlib
 import pytest
 
 import gitea_mcp.prepare as _prepare_mod
-from gitea_mcp.prepare import _validate_brief
 
 
 @pytest.fixture(autouse=True)
