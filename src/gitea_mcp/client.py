@@ -55,7 +55,8 @@ class GiteaClient:
         if status >= 400:
             try:
                 body = r.json()
-            except Exception:
+            except ValueError:
+                # no-report: parse fallback for a non-JSON error body; the HTTP error raises below
                 body = r.text
             raise GiteaError(status, method, path, body)
         return r

@@ -21,6 +21,7 @@ from pydantic_core import PydanticUndefined
 
 from . import tools as _tools_module
 from .registry import ROOT, _UNSET, _Unset
+from .wait_registry import WAIT_REGISTRY as _WAIT_REGISTRY
 
 mcp = FastMCP("gitea")
 
@@ -371,8 +372,6 @@ def _register_tools():
             return tool_fn
 
         mcp.tool()(_make_tool(group_name, group.doc))
-
-    from .wait_registry import WAIT_REGISTRY as _WAIT_REGISTRY
 
     @mcp.resource(
         "gitea://waits/{wait_id}",

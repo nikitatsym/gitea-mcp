@@ -12,79 +12,36 @@ from __future__ import annotations
 import asyncio
 import json
 
-import httpx
 import pytest
 
 import gitea_mcp.tools as tools_mod
-from gitea_mcp.client import GiteaClient
-from gitea_mcp.config import _reset_settings
+from gitea_mcp import server
 from gitea_mcp.wait_registry import WAIT_REGISTRY
+from waiter_fixtures import (
+    RUN_JOBS_PATH,
+    RUN_PATH,
+    job_payload,
+    make_handler,
+    run_payload,
+    seed,
+    seed_run_script,
+    tools_state,
+)
 
 
 @pytest.fixture(autouse=True)
 def _reset_state(monkeypatch):
-    monkeypatch.setenv("GITEA_URL", "https://gitea.example.com")
-    monkeypatch.setenv("GITEA_TOKEN", "test-token")
-    _reset_settings()
-    tools_mod._client = None
-    WAIT_REGISTRY.clear()
-    yield
-    WAIT_REGISTRY.clear()
-    tools_mod._client = None
-    _reset_settings()
+    with tools_state(monkeypatch):
+        WAIT_REGISTRY.clear()
+        yield
+        WAIT_REGISTRY.clear()
 
 
-def _seed(handler) -> GiteaClient:
-    client = GiteaClient(transport=httpx.MockTransport(handler))
-    tools_mod._client = client
-    return client
-
-
-def _run(run_id: int, status: str, conclusion: str | None = None) -> dict:
-    return {
-        "id": run_id,
-        "display_title": "test run",
-        "status": status,
-        "conclusion": conclusion,
-        "event": "push",
-        "head_branch": "main",
-        "head_sha": "deadbeef" * 5,
-        "run_number": 1,
-        "path": ".gitea/workflows/ci.yml",
-        "started_at": "2026-06-13T10:00:00Z",
-        "completed_at": None,
-    }
-
-
-def _job(job_id: int, status: str, conclusion: str | None = None) -> dict:
-    return {
-        "id": job_id,
-        "name": "build",
-        "status": status,
-        "conclusion": conclusion,
-        "run_id": 42,
-        "started_at": "2026-06-13T10:00:00Z",
-        "completed_at": None,
-        "steps": [],
-    }
-
-
-def _handler(scripts: dict[str, list]):
-    def handler(req: httpx.Request) -> httpx.Response:
-        path = req.url.path
-        script = scripts.get(path)
-        if not script:
-            return httpx.Response(404, json={"path": path})
-        item = script.pop(0) if len(script) > 1 else script[0]
-        status, body = item
-        if isinstance(body, str):
-            return httpx.Response(status, text=body, headers={"content-type": "text/plain"})
-        return httpx.Response(status, json=body)
-    return handler
-
-
-_RUN_PATH = "/api/v1/repos/me/proj/actions/runs/42"
-_RUN_JOBS_PATH = "/api/v1/repos/me/proj/actions/runs/42/jobs"
+async def _start_run(**overrides):
+    """Start a run wait against the seeded fixture run."""
+    return await tools_mod.workflow_runs_wait_start(
+        owner="me", repo="proj", run_id=42, interval=0.01, **overrides,
+    )
 
 
 async def _cleanup(wait_id: str) -> None:
@@ -94,6 +51,7 @@ async def _cleanup(wait_id: str) -> None:
         try:
             await handle.task
         except asyncio.CancelledError:
+            # no-report: the expected outcome of the cancel this helper issues
             pass
 
 
@@ -103,10 +61,10 @@ async def _cleanup(wait_id: str) -> None:
 class TestWaitStartPoll:
     def test_terminal_on_first_poll_returns_enriched_snapshot(self):
         scripts = {
-            _RUN_PATH: [(200, _run(42, "completed", "success"))],
-            _RUN_JOBS_PATH: [(200, {"jobs": [_job(7, "completed", "success")]})],
+            RUN_PATH: [(200, run_payload(42, "completed", "success"))],
+            RUN_JOBS_PATH: [(200, {"jobs": [job_payload(7, "completed", "success")]})],
         }
-        _seed(_handler(scripts))
+        seed(make_handler(scripts))
 
         snap = asyncio.run(tools_mod.workflow_runs_wait_start(
             owner="me", repo="proj", run_id=42, interval=0.01,
@@ -123,19 +81,10 @@ class TestWaitStartPoll:
         assert handle is not None and handle.task is None
 
     def test_max_block_waits_for_terminal(self):
-        scripts = {
-            _RUN_PATH: [
-                (200, _run(42, "in_progress")),
-                (200, _run(42, "completed", "success")),
-            ],
-            _RUN_JOBS_PATH: [(200, {"jobs": []})],
-        }
-        _seed(_handler(scripts))
+        seed_run_script(("in_progress", None), ("completed", "success"), jobs=[])
 
         async def flow():
-            start = await tools_mod.workflow_runs_wait_start(
-                owner="me", repo="proj", run_id=42, interval=0.01,
-            )
+            start = await _start_run()
             poll = await tools_mod.workflow_runs_wait_poll(
                 start["wait_id"], max_block=5.0,
             )
@@ -149,14 +98,10 @@ class TestWaitStartPoll:
         assert "in_progress" in statuses and "success" in statuses
 
     def test_max_block_times_out_returns_partial(self):
-        scripts = {_RUN_PATH: [(200, _run(42, "in_progress"))]}
-        _seed(_handler(scripts))
+        seed_run_script(("in_progress", None))
 
         async def flow():
-            start = await tools_mod.workflow_runs_wait_start(
-                owner="me", repo="proj", run_id=42, interval=0.01,
-                include_jobs=False,
-            )
+            start = await _start_run(include_jobs=False)
             poll = await tools_mod.workflow_runs_wait_poll(
                 start["wait_id"], max_block=0.05,
             )
@@ -169,23 +114,17 @@ class TestWaitStartPoll:
         assert poll["status"] == "in_progress"
 
     def test_initial_poll_failure_marks_error(self):
-        _seed(_handler({}))  # everything 404
-        snap = asyncio.run(tools_mod.workflow_runs_wait_start(
-            owner="me", repo="proj", run_id=42, interval=0.01,
-        ))
+        seed(make_handler({}))  # everything 404
+        snap = asyncio.run(_start_run())
         assert snap["terminated"] is False
         assert "initial poll failed" in snap["error"]
         assert WAIT_REGISTRY.get(snap["wait_id"]).task is None
 
     def test_cancel_running_marks_cancelled(self):
-        scripts = {_RUN_PATH: [(200, _run(42, "in_progress"))]}
-        _seed(_handler(scripts))
+        seed_run_script(("in_progress", None))
 
         async def flow():
-            start = await tools_mod.workflow_runs_wait_start(
-                owner="me", repo="proj", run_id=42, interval=0.01,
-                include_jobs=False,
-            )
+            start = await _start_run(include_jobs=False)
             return await tools_mod.workflow_runs_wait_cancel(start["wait_id"])
 
         snap = asyncio.run(flow())
@@ -193,16 +132,12 @@ class TestWaitStartPoll:
         assert snap["terminated"] is False
 
     def test_unknown_and_wrong_kind_raise(self):
-        scripts = {_RUN_PATH: [(200, _run(42, "in_progress"))]}
-        _seed(_handler(scripts))
+        seed_run_script(("in_progress", None))
 
         async def flow():
             with pytest.raises(ValueError, match="Unknown wait_id"):
                 await tools_mod.workflow_runs_wait_poll("wr-nope")
-            start = await tools_mod.workflow_runs_wait_start(
-                owner="me", repo="proj", run_id=42, interval=0.01,
-                include_jobs=False,
-            )
+            start = await _start_run(include_jobs=False)
             with pytest.raises(ValueError, match="is a run wait, not job"):
                 await tools_mod.workflow_jobs_wait_poll(start["wait_id"])
             await _cleanup(start["wait_id"])
@@ -215,20 +150,13 @@ class TestWaitStartPoll:
 
 class TestWaitResilience:
     def test_transient_poll_failure_recovers(self):
-        scripts = {
-            _RUN_PATH: [
-                (200, _run(42, "in_progress")),    # initial inline poll
-                (502, {"message": "bad gateway"}),  # transient blip
-                (200, _run(42, "completed", "success")),
-            ],
-            _RUN_JOBS_PATH: [(200, {"jobs": []})],
-        }
-        _seed(_handler(scripts))
+        seed_run_script(
+            ("in_progress", None), ("completed", "success"),
+            jobs=[], extra=[(502, {"message": "bad gateway"})],
+        )
 
         async def flow():
-            start = await tools_mod.workflow_runs_wait_start(
-                owner="me", repo="proj", run_id=42, interval=0.01,
-            )
+            start = await _start_run()
             return await tools_mod.workflow_runs_wait_poll(
                 start["wait_id"], max_block=5.0,
             )
@@ -240,19 +168,13 @@ class TestWaitResilience:
         assert "502" in poll["last_poll_error"]
 
     def test_consecutive_failures_exhaust_budget(self):
-        scripts = {
-            _RUN_PATH: [
-                (200, _run(42, "in_progress")),
-                (502, {"message": "bad gateway"}),  # repeats forever
-            ],
-        }
-        _seed(_handler(scripts))
+        # The 502 is the last item, so it repeats forever.
+        seed_run_script(
+            ("in_progress", None), extra=[(502, {"message": "bad gateway"})],
+        )
 
         async def flow():
-            start = await tools_mod.workflow_runs_wait_start(
-                owner="me", repo="proj", run_id=42, interval=0.01,
-                max_poll_failures=2, include_jobs=False,
-            )
+            start = await _start_run(max_poll_failures=2, include_jobs=False)
             return await tools_mod.workflow_runs_wait_poll(
                 start["wait_id"], max_block=5.0,
             )
@@ -264,14 +186,10 @@ class TestWaitResilience:
         assert poll["poll_failures"] == 2
 
     def test_max_lifetime_marks_timed_out(self):
-        scripts = {_RUN_PATH: [(200, _run(42, "in_progress"))]}
-        _seed(_handler(scripts))
+        seed_run_script(("in_progress", None))
 
         async def flow():
-            start = await tools_mod.workflow_runs_wait_start(
-                owner="me", repo="proj", run_id=42, interval=0.01,
-                max_lifetime=0.05, include_jobs=False,
-            )
+            start = await _start_run(max_lifetime=0.05, include_jobs=False)
             return await tools_mod.workflow_runs_wait_poll(
                 start["wait_id"], max_block=5.0,
             )
@@ -287,16 +205,10 @@ class TestWaitResilience:
 
 class TestWaitsListAndDispatch:
     def test_waits_list_filters(self):
-        scripts = {
-            _RUN_PATH: [(200, _run(42, "completed", "success"))],
-            _RUN_JOBS_PATH: [(200, {"jobs": []})],
-        }
-        _seed(_handler(scripts))
+        seed_run_script(("completed", "success"), jobs=[])
 
         async def flow():
-            await tools_mod.workflow_runs_wait_start(
-                owner="me", repo="proj", run_id=42, interval=0.01,
-            )
+            await _start_run()
             return (
                 tools_mod.waits_list(),
                 tools_mod.waits_list(kind="run", terminated=True),
@@ -315,12 +227,7 @@ class TestWaitsListAndDispatch:
     def test_dispatch_through_meta_tool_path(self):
         """The async meta-tool must await waiter coroutines and reject ctx
         injection via params."""
-        scripts = {
-            _RUN_PATH: [(200, _run(42, "completed", "success"))],
-            _RUN_JOBS_PATH: [(200, {"jobs": []})],
-        }
-        _seed(_handler(scripts))
-        from gitea_mcp import server
+        seed_run_script(("completed", "success"), jobs=[])
 
         async def flow():
             coro = server._dispatch(
@@ -347,8 +254,7 @@ class TestWaitsListAndDispatch:
             )
 
     def test_wrong_group_hint(self):
-        _seed(_handler({}))
-        from gitea_mcp import server
+        seed(make_handler({}))
         with pytest.raises(ValueError, match="belongs to 'gitea_read'"):
             server._dispatch(
                 "WorkflowRunsWaitStart", "gitea_execute",
@@ -356,17 +262,10 @@ class TestWaitsListAndDispatch:
             )
 
     def test_resource_returns_snapshot_json(self):
-        scripts = {
-            _RUN_PATH: [(200, _run(42, "completed", "success"))],
-            _RUN_JOBS_PATH: [(200, {"jobs": []})],
-        }
-        _seed(_handler(scripts))
-        from gitea_mcp import server  # noqa: F401 - registers the resource
+        seed_run_script(("completed", "success"), jobs=[])
 
         async def flow():
-            snap = await tools_mod.workflow_runs_wait_start(
-                owner="me", repo="proj", run_id=42, interval=0.01,
-            )
+            snap = await _start_run()
             handle = WAIT_REGISTRY.get(snap["wait_id"])
             return json.loads(json.dumps(handle.snapshot(), default=str))
 

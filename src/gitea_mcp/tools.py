@@ -5,11 +5,14 @@ import base64
 import logging
 import re
 import time
+from importlib.metadata import version as _pkg_version
 from typing import Annotated, Literal, Optional
 
+import httpx
 from pydantic import Field
 
 from .client import GiteaClient, GiteaError
+from .config import get_settings
 from .prepare import (
     _ok, _body, _validate_brief, _enforce_private, _enforce_visibility,
     _slim_issues, _slim_repos, _slim_notifications, _slim_comments,
@@ -143,14 +146,45 @@ gitea_admin_write = Group(
 gitea_create = gitea_write
 gitea_update = gitea_write
 
+# ── Shared parameter annotations ─────────────────────────────────────────────
+# One definition per parameter that repeats across create/edit twins, so the
+# generated help and schema cannot drift between them.
+
+_HookConfig = Annotated[dict, Field(description="Webhook config (string keys, string values). Required keys depend on hook_type. For 'gitea'/'gogs': {'url': 'https://...', 'content_type': 'json'|'form', 'secret': '...'}. Other hook types use their own URL/token fields.")]
+_HookConfigPatch = Annotated[Optional[dict], Field(description="Replacement webhook config (string keys/values). Shape depends on the hook's type — for 'gitea'/'gogs': {'url': ..., 'content_type': 'json'|'form', 'secret': ...}.")]
+_HookEvents = Annotated[list[str], Field(description="Gitea event names to subscribe to, e.g. ['push', 'pull_request', 'issues', 'create', 'delete', 'release', 'issue_comment'].")]
+_HookEventsPatch = Annotated[Optional[list[str]], Field(description="Replacement list of Gitea event names (e.g. ['push', 'pull_request']).")]
+_HookType = Annotated[Literal["gitea", "gogs", "slack", "discord", "dingtalk", "telegram", "msteams", "feishu", "matrix", "wechatwork", "packagist"], Field(description="Webhook delivery type — determines required keys in `config`.")]
+
+_LabelIds = Annotated[Optional[list[int]], Field(description=(
+    "Label IDs (int64) from list_repo_labels — NOT names. "
+    "Calling list_repo_labels first to look up IDs is required. "
+    "Passing names like ['frontend'] returns 422 from Gitea."
+))]
+_Assignees = Annotated[Optional[list[str]], Field(description="List of USERNAMES to assign (NOT user IDs / NOT display names).")]
+_AssigneesPatch = Annotated[Optional[list[str]], Field(description="Replacement list of assignee USERNAMES (NOT user IDs / NOT display names).")]
+_MilestoneId = Annotated[Optional[int], Field(description="Milestone integer ID from list_milestones (NOT the milestone title).")]
+_MilestonePatch = Annotated[Optional[int], Field(description="Milestone integer ID from list_milestones (NOT the milestone title). Pass 0 to clear.")]
+
+_Visibility = Annotated[Optional[Literal["public", "limited", "private"]], Field(description="Visibility level: public (anyone), limited (logged-in users), private (members only).")]
+_TeamPermission = Annotated[Optional[Literal["none", "read", "write", "admin", "owner"]], Field(description="Access level granted to team members on the team's repos.")]
+
+_BpEnablePush = Annotated[Optional[bool], Field(description="If False, nobody can push directly to the matched branch (PR-only).")]
+_BpEnablePushWhitelist = Annotated[Optional[bool], Field(description="If True, only users listed in `push_whitelist_usernames` may push.")]
+_BpEnableMergeWhitelist = Annotated[Optional[bool], Field(description="If True, only users in `merge_whitelist_usernames` may merge PRs into the matched branch.")]
+_BpMergeWhitelistUsernames = Annotated[Optional[list[str]], Field(description="USERNAMES allowed to merge when merge whitelist is enabled.")]
+_BpRequiredApprovals = Annotated[Optional[int], Field(description="Minimum number of approving reviews required before a PR may merge.")]
+_BpEnableStatusCheck = Annotated[Optional[bool], Field(description="If True, listed status contexts must be green before merge.")]
+_BpStatusCheckContexts = Annotated[Optional[list[str]], Field(description="Required commit-status context strings (matches the `context` field of create_commit_status).")]
+
+
 # ── General ──────────────────────────────────────────────────────────────────
 
 
 @_op(ROOT)
 def gitea_version():
     """Get the Gitea MCP server version and service version."""
-    from importlib.metadata import version
-    return {"mcp": version("gitea-mcp"), "service": _get_client().get("/version")}
+    return {"mcp": _pkg_version("gitea-mcp"), "service": _get_client().get("/version")}
 
 @_op(gitea_read)
 def get_current_user():
@@ -316,8 +350,6 @@ def _basic_auth_request(method: str, path: str, username: str, password: str, js
     /users/{username}/tokens hard-requires basic auth (reqBasicOrRevProxyAuth
     in routers/api/v1/api.go) — the token-auth client cannot reach it.
     """
-    import httpx
-    from .client import GiteaError
     base = _get_client()._base
     r = httpx.request(
         method,
@@ -329,7 +361,8 @@ def _basic_auth_request(method: str, path: str, username: str, password: str, js
     if r.status_code >= 400:
         try:
             body = r.json()
-        except Exception:
+        except ValueError:
+            # no-report: parse fallback for a non-JSON error body; the HTTP error raises below
             body = r.text
         raise GiteaError(r.status_code, method, path, body)
     return r.json() if r.content else None
@@ -357,7 +390,6 @@ def create_user_access_token(
 
     The response's `sha1` field is the raw token — Gitea will not show it again.
     """
-    from .config import get_settings
     s = get_settings()
     pwd = password or s.gitea_token
     user = username
@@ -484,6 +516,7 @@ def edit_repo(
     has_actions: Optional[bool] = None,
     default_branch: Optional[str] = None,
     archived: Optional[bool] = None,
+    template: Annotated[Optional[bool], Field(description="True = mark the repo as a template (usable by CreateRepoFromTemplate); False = plain repo.")] = None,
 ):
     """Edit a repository's properties."""
     private = _enforce_private(private)
@@ -649,6 +682,10 @@ def get_repo_collaborator_permission(
         )
     )
 
+def _hook_body(hook_type: str, config: dict, events: list, active: bool) -> dict:
+    return {"type": hook_type, "config": config, "events": events, "active": active}
+
+
 # ── Webhooks ─────────────────────────────────────────────────────────────────
 
 
@@ -661,27 +698,23 @@ def list_repo_webhooks(owner: str, repo: str):
 def create_repo_webhook(
     owner: str,
     repo: str,
-    config: Annotated[dict, Field(description="Webhook config (string keys, string values). Required keys depend on hook_type. For 'gitea'/'gogs': {'url': 'https://...', 'content_type': 'json'|'form', 'secret': '...'}. Other hook types use their own URL/token fields.")],
-    events: Annotated[list[str], Field(description="Gitea event names to subscribe to, e.g. ['push', 'pull_request', 'issues', 'create', 'delete', 'release', 'issue_comment'].")],
-    hook_type: Annotated[Literal["gitea", "gogs", "slack", "discord", "dingtalk", "telegram", "msteams", "feishu", "matrix", "wechatwork", "packagist"], Field(description="Webhook delivery type — determines required keys in `config`.")] = "gitea",
+    config: _HookConfig,
+    events: _HookEvents,
+    hook_type: _HookType = "gitea",
     active: bool = True,
 ):
     """Create a webhook for a repository."""
-    body: dict = {
-        "type": hook_type,
-        "config": config,
-        "events": events,
-        "active": active,
-    }
-    return _ok(_get_client().post(f"/repos/{owner}/{repo}/hooks", json=body))
+    return _ok(_get_client().post(
+        f"/repos/{owner}/{repo}/hooks", json=_hook_body(hook_type, config, events, active),
+    ))
 
 @_op(gitea_write)
 def edit_repo_webhook(
     owner: str,
     repo: str,
     hook_id: int,
-    config: Annotated[Optional[dict], Field(description="Replacement webhook config (string keys/values). Shape depends on the hook's type — for 'gitea'/'gogs': {'url': ..., 'content_type': 'json'|'form', 'secret': ...}.")] = None,
-    events: Annotated[Optional[list[str]], Field(description="Replacement list of Gitea event names (e.g. ['push', 'pull_request']).")] = None,
+    config: _HookConfigPatch = None,
+    events: _HookEventsPatch = None,
     active: Optional[bool] = None,
 ):
     """Edit a repository webhook."""
@@ -708,26 +741,22 @@ def list_org_webhooks(org: str):
 @_op(gitea_write)
 def create_org_webhook(
     org: str,
-    config: Annotated[dict, Field(description="Webhook config (string keys, string values). Required keys depend on hook_type. For 'gitea'/'gogs': {'url': 'https://...', 'content_type': 'json'|'form', 'secret': '...'}. Other hook types use their own URL/token fields.")],
-    events: Annotated[list[str], Field(description="Gitea event names to subscribe to, e.g. ['push', 'pull_request', 'issues', 'create', 'delete', 'release', 'issue_comment'].")],
-    hook_type: Annotated[Literal["gitea", "gogs", "slack", "discord", "dingtalk", "telegram", "msteams", "feishu", "matrix", "wechatwork", "packagist"], Field(description="Webhook delivery type — determines required keys in `config`.")] = "gitea",
+    config: _HookConfig,
+    events: _HookEvents,
+    hook_type: _HookType = "gitea",
     active: bool = True,
 ):
     """Create a webhook for an organization."""
-    body: dict = {
-        "type": hook_type,
-        "config": config,
-        "events": events,
-        "active": active,
-    }
-    return _ok(_get_client().post(f"/orgs/{org}/hooks", json=body))
+    return _ok(_get_client().post(
+        f"/orgs/{org}/hooks", json=_hook_body(hook_type, config, events, active),
+    ))
 
 @_op(gitea_write)
 def edit_org_webhook(
     org: str,
     hook_id: int,
-    config: Annotated[Optional[dict], Field(description="Replacement webhook config (string keys/values). Shape depends on the hook's type — for 'gitea'/'gogs': {'url': ..., 'content_type': 'json'|'form', 'secret': ...}.")] = None,
-    events: Annotated[Optional[list[str]], Field(description="Replacement list of Gitea event names (e.g. ['push', 'pull_request']).")] = None,
+    config: _HookConfigPatch = None,
+    events: _HookEventsPatch = None,
     active: Optional[bool] = None,
 ):
     """Edit an organization webhook."""
@@ -914,14 +943,14 @@ def create_branch_protection(
     owner: str,
     repo: str,
     branch_name: Annotated[str, Field(description="Branch name OR glob pattern (e.g. 'main', 'release/*') the rule applies to.")],
-    enable_push: Annotated[Optional[bool], Field(description="If False, nobody can push directly to the matched branch (PR-only).")] = None,
-    enable_push_whitelist: Annotated[Optional[bool], Field(description="If True, only users listed in `push_whitelist_usernames` may push.")] = None,
+    enable_push: _BpEnablePush = None,
+    enable_push_whitelist: _BpEnablePushWhitelist = None,
     push_whitelist_usernames: Annotated[Optional[list[str]], Field(description="USERNAMES allowed to push when push whitelist is enabled (NOT team names — use the team-id variant on the Gitea API if needed).")] = None,
-    enable_merge_whitelist: Annotated[Optional[bool], Field(description="If True, only users in `merge_whitelist_usernames` may merge PRs into the matched branch.")] = None,
-    merge_whitelist_usernames: Annotated[Optional[list[str]], Field(description="USERNAMES allowed to merge when merge whitelist is enabled.")] = None,
-    required_approvals: Annotated[Optional[int], Field(description="Minimum number of approving reviews required before a PR may merge.")] = None,
-    enable_status_check: Annotated[Optional[bool], Field(description="If True, listed status contexts must be green before merge.")] = None,
-    status_check_contexts: Annotated[Optional[list[str]], Field(description="Required commit-status context strings (matches the `context` field of create_commit_status).")] = None,
+    enable_merge_whitelist: _BpEnableMergeWhitelist = None,
+    merge_whitelist_usernames: _BpMergeWhitelistUsernames = None,
+    required_approvals: _BpRequiredApprovals = None,
+    enable_status_check: _BpEnableStatusCheck = None,
+    status_check_contexts: _BpStatusCheckContexts = None,
 ):
     """Create a branch protection rule for a repository."""
     return _call("POST", "/repos/{owner}/{repo}/branch_protections", locals())
@@ -938,14 +967,14 @@ def edit_branch_protection(
     owner: str,
     repo: str,
     name: str,
-    enable_push: Annotated[Optional[bool], Field(description="If False, nobody can push directly to the matched branch (PR-only).")] = None,
-    enable_push_whitelist: Annotated[Optional[bool], Field(description="If True, only users listed in `push_whitelist_usernames` may push.")] = None,
+    enable_push: _BpEnablePush = None,
+    enable_push_whitelist: _BpEnablePushWhitelist = None,
     push_whitelist_usernames: Annotated[Optional[list[str]], Field(description="USERNAMES allowed to push when push whitelist is enabled (NOT team names).")] = None,
-    enable_merge_whitelist: Annotated[Optional[bool], Field(description="If True, only users in `merge_whitelist_usernames` may merge PRs into the matched branch.")] = None,
-    merge_whitelist_usernames: Annotated[Optional[list[str]], Field(description="USERNAMES allowed to merge when merge whitelist is enabled.")] = None,
-    required_approvals: Annotated[Optional[int], Field(description="Minimum number of approving reviews required before a PR may merge.")] = None,
-    enable_status_check: Annotated[Optional[bool], Field(description="If True, listed status contexts must be green before merge.")] = None,
-    status_check_contexts: Annotated[Optional[list[str]], Field(description="Required commit-status context strings (matches the `context` field of create_commit_status).")] = None,
+    enable_merge_whitelist: _BpEnableMergeWhitelist = None,
+    merge_whitelist_usernames: _BpMergeWhitelistUsernames = None,
+    required_approvals: _BpRequiredApprovals = None,
+    enable_status_check: _BpEnableStatusCheck = None,
+    status_check_contexts: _BpStatusCheckContexts = None,
 ):
     """Edit a branch protection rule."""
     return _call("PATCH", "/repos/{owner}/{repo}/branch_protections/{name}", locals())
@@ -1312,11 +1341,11 @@ def search_issues(
 ):
     """Search issues across repositories.
 
-    brief (default True): compact view — number, title, state, labels, assignee,
-    updated_at, and body summary extracted from a <brief>...</brief> tag.
-    If brief is null for an issue, use get_issue for full details or edit_issue
-    to add <brief>short summary</brief> to its body for convenient list views.
-    Set brief=False for full Gitea API response objects."""
+    brief (default True): slim per-issue view (number, title, state, labels,
+    assignee, updated_at, plus a summary pulled from a <brief>...</brief> tag
+    in the body). A null brief means the body has no such tag: get_issue shows
+    the full issue, edit_issue can add the tag. brief=False returns the full
+    Gitea API objects."""
     params: dict = {"q": query, "limit": limit}
     if owner is not None:
         params["owner"] = owner
@@ -1347,13 +1376,9 @@ def create_issue(
     repo: str,
     title: str,
     body: Annotated[Optional[str], Field(description="Issue body as markdown. MUST include a <brief>short summary</brief> tag (enforced) for list views.")] = None,
-    assignees: Annotated[Optional[list[str]], Field(description="List of USERNAMES to assign (NOT user IDs / NOT display names).")] = None,
-    milestone_id: Annotated[Optional[int], Field(description="Milestone integer ID from list_milestones (NOT the milestone title).")] = None,
-    labels: Annotated[Optional[list[int]], Field(description=(
-        "Label IDs (int64) from list_repo_labels — NOT names. "
-        "Calling list_repo_labels first to look up IDs is required. "
-        "Passing names like ['frontend'] returns 422 from Gitea."
-    ))] = None,
+    assignees: _Assignees = None,
+    milestone_id: _MilestoneId = None,
+    labels: _LabelIds = None,
 ):
     """Create an issue in a repository. Body must include <brief>summary</brief> tag."""
     _validate_brief(body)
@@ -1367,13 +1392,9 @@ def edit_issue(
     title: Optional[str] = None,
     body: Annotated[Optional[str], Field(description="New issue body as markdown. If provided, MUST include a <brief>short summary</brief> tag (enforced).")] = None,
     state: Annotated[Optional[Literal["open", "closed"]], Field(description="Change issue state.")] = None,
-    assignees: Annotated[Optional[list[str]], Field(description="Replacement list of assignee USERNAMES (NOT user IDs / NOT display names).")] = None,
-    milestone: Annotated[Optional[int], Field(description="Milestone integer ID from list_milestones (NOT the milestone title). Pass 0 to clear.")] = None,
-    labels: Annotated[Optional[list[int]], Field(description=(
-        "Label IDs (int64) from list_repo_labels — NOT names. "
-        "Calling list_repo_labels first to look up IDs is required. "
-        "Passing names like ['frontend'] returns 422 from Gitea."
-    ))] = None,
+    assignees: _AssigneesPatch = None,
+    milestone: _MilestonePatch = None,
+    labels: _LabelIds = None,
     due_date: Annotated[Optional[str], Field(description="ISO-8601 timestamp, e.g. '2026-05-20T00:00:00Z'.")] = None,
 ):
     """Edit an issue. State can be 'open' or 'closed'. Body must include <brief>summary</brief> tag."""
@@ -1494,7 +1515,13 @@ def set_issue_deadline(
 @_op(gitea_delete)
 def delete_issue_deadline(owner: str, repo: str, index: int):
     """Remove a deadline from an issue."""
-    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/deadline", locals())
+    # Gitea has no DELETE on this path; POSTing a null due_date clears it.
+    return _ok(
+        _get_client().post(
+            f"/repos/{owner}/{repo}/issues/{index}/deadline",
+            json={"due_date": None},
+        )
+    )
 
 @_op(gitea_delete)
 def clear_issue_labels(owner: str, repo: str, index: int):
@@ -1627,7 +1654,8 @@ def unsubscribe_from_issue(owner: str, repo: str, index: int, user: str):
 @_op(gitea_read)
 def list_issue_reactions(owner: str, repo: str, index: int):
     """List reactions on an issue."""
-    return _call("GET", "/repos/{owner}/{repo}/issues/{index}/reactions", locals())
+    # Gitea serializes an empty reaction set as JSON null - keep it a list.
+    return _get_client().get(f"/repos/{owner}/{repo}/issues/{index}/reactions") or []
 
 @_op(gitea_write)
 def add_issue_reaction(
@@ -1664,7 +1692,10 @@ def remove_issue_reaction(
 @_op(gitea_read)
 def list_comment_reactions(owner: str, repo: str, comment_id: int):
     """List reactions on a comment."""
-    return _call("GET", "/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions", locals())
+    # Gitea serializes an empty reaction set as JSON null - keep it a list.
+    return _get_client().get(
+        f"/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions"
+    ) or []
 
 @_op(gitea_write)
 def add_comment_reaction(
@@ -1783,13 +1814,9 @@ def create_pull_request(
     head: Annotated[str, Field(description="Source branch — where the changes live. For cross-repo PRs use 'forkOwner:branch' (e.g. 'alice:feature-x').")],
     base: Annotated[str, Field(description="Target branch — where to merge into (typically the default branch, e.g. 'main').")],
     body: Annotated[Optional[str], Field(description="PR description as markdown.")] = None,
-    assignees: Annotated[Optional[list[str]], Field(description="List of USERNAMES to assign (NOT user IDs / NOT display names).")] = None,
-    milestone_id: Annotated[Optional[int], Field(description="Milestone integer ID from list_milestones (NOT the milestone title).")] = None,
-    labels: Annotated[Optional[list[int]], Field(description=(
-        "Label IDs (int64) from list_repo_labels — NOT names. "
-        "Calling list_repo_labels first to look up IDs is required. "
-        "Passing names like ['frontend'] returns 422 from Gitea."
-    ))] = None,
+    assignees: _Assignees = None,
+    milestone_id: _MilestoneId = None,
+    labels: _LabelIds = None,
 ):
     """Create a pull request."""
     return _call("POST", "/repos/{owner}/{repo}/pulls", locals(), rename={"milestone_id": "milestone"})
@@ -1803,13 +1830,9 @@ def edit_pull_request(
     body: Annotated[Optional[str], Field(description="New PR description as markdown.")] = None,
     state: Annotated[Optional[Literal["open", "closed"]], Field(description="Change PR state. Use 'closed' to close without merging.")] = None,
     base: Annotated[Optional[str], Field(description="Retarget the PR — name of the new base branch to merge into.")] = None,
-    assignees: Annotated[Optional[list[str]], Field(description="Replacement list of assignee USERNAMES (NOT user IDs / NOT display names).")] = None,
-    milestone: Annotated[Optional[int], Field(description="Milestone integer ID from list_milestones (NOT the milestone title). Pass 0 to clear.")] = None,
-    labels: Annotated[Optional[list[int]], Field(description=(
-        "Label IDs (int64) from list_repo_labels — NOT names. "
-        "Calling list_repo_labels first to look up IDs is required. "
-        "Passing names like ['frontend'] returns 422 from Gitea."
-    ))] = None,
+    assignees: _AssigneesPatch = None,
+    milestone: _MilestonePatch = None,
+    labels: _LabelIds = None,
 ):
     """Edit a pull request."""
     return _call("PATCH", "/repos/{owner}/{repo}/pulls/{index}", locals())
@@ -2122,7 +2145,7 @@ def create_org(
     full_name: Optional[str] = None,
     description: Optional[str] = None,
     website: Optional[str] = None,
-    visibility: Annotated[Optional[Literal["public", "limited", "private"]], Field(description="Visibility level: public (anyone), limited (logged-in users), private (members only).")] = None,
+    visibility: _Visibility = None,
 ):
     """Create an organization."""
     visibility = _enforce_visibility(visibility)
@@ -2134,7 +2157,7 @@ def edit_org(
     full_name: Optional[str] = None,
     description: Optional[str] = None,
     website: Optional[str] = None,
-    visibility: Annotated[Optional[Literal["public", "limited", "private"]], Field(description="Visibility level: public (anyone), limited (logged-in users), private (members only).")] = None,
+    visibility: _Visibility = None,
 ):
     """Edit an organization's properties."""
     visibility = _enforce_visibility(visibility)
@@ -2231,7 +2254,7 @@ def get_team(team_id: int):
 def create_team(
     org: str,
     name: Annotated[str, Field(description="Team name (unique within the org).")],
-    permission: Annotated[Optional[Literal["none", "read", "write", "admin", "owner"]], Field(description="Access level granted to team members on the team's repos.")] = None,
+    permission: _TeamPermission = None,
     units: Annotated[Optional[list[str]], Field(description=(
         "Repo features this team can access. Each value is a unit key: "
         "'repo.code', 'repo.issues', 'repo.pulls', 'repo.releases', "
@@ -2248,7 +2271,7 @@ def edit_team(
     team_id: int,
     name: Optional[str] = None,
     description: Optional[str] = None,
-    permission: Annotated[Optional[Literal["none", "read", "write", "admin", "owner"]], Field(description="Access level granted to team members on the team's repos.")] = None,
+    permission: _TeamPermission = None,
     units: Annotated[Optional[list[str]], Field(description=(
         "Repo features this team can access. Each value is a unit key: "
         "'repo.code', 'repo.issues', 'repo.pulls', 'repo.releases', "
@@ -2583,12 +2606,27 @@ def admin_run_cron_job(
 
 @_op(gitea_admin_read)
 def admin_list_repos(
-    limit: Annotated[Optional[int], Field(description="Page size. Server default if omitted.")] = None,
-    page: Annotated[Optional[int], Field(description="1-based page number.")] = None,
+    limit: Annotated[Optional[int], Field(description="Page size. Defaults to 50.")] = None,
+    page: Annotated[Optional[int], Field(description="1-based page number. When given, only that page is returned; omitted = walk every page.")] = None,
 ):
-    """List all repositories (admin only)."""
-    params = _body(locals())
-    return _ok(_get_client().paginate("/admin/repos", params=params or None))
+    """List every repository on the instance (admin only).
+
+    Gitea exposes no /admin/repos endpoint — this searches with the caller's
+    token, which for an admin covers all repos including private ones."""
+    page_size = limit or 50
+    result: list = []
+    current = page or 1
+    while True:
+        data = _get_client().get(
+            "/repos/search",
+            params={"limit": page_size, "page": current, "private": True},
+        )
+        batch = data.get("data") or [] if isinstance(data, dict) else data
+        result.extend(batch)
+        if page is not None or len(batch) < page_size:
+            break
+        current += 1
+    return _ok(result)
 
 @_op(gitea_admin_write)
 def admin_create_org(
@@ -2597,7 +2635,7 @@ def admin_create_org(
     full_name: Annotated[Optional[str], Field(description="Display name shown in the UI (free text). Defaults to `username`.")] = None,
     description: Optional[str] = None,
     website: Optional[str] = None,
-    visibility: Annotated[Optional[Literal["public", "limited", "private"]], Field(description="Visibility level: public (anyone), limited (logged-in users), private (members only).")] = None,
+    visibility: _Visibility = None,
 ):
     """Create an organization (admin only). owner_name is the user who will own the org."""
     visibility = _enforce_visibility(visibility)
@@ -2832,12 +2870,8 @@ def delete_org_action_variable(org: str, variable_name: str):
     return _ok(_get_client().delete(f"/orgs/{org}/actions/variables/{variable_name}"))
 
 # ── Actions - User Secrets/Variables ─────────────────────────────────────
+# No list op: Gitea exposes GET on org and repo secrets but not on user ones.
 
-
-@_op(gitea_read)
-def list_user_action_secrets():
-    """List action secrets for the current user."""
-    return _ok(_get_client().paginate("/user/actions/secrets"))
 
 @_op(gitea_write)
 def create_user_action_secret(
@@ -3127,6 +3161,42 @@ _TERMINAL_LOG_LEVEL: dict = {
 }
 
 
+def _wait_result(
+    payload_key: str, payload, status, terminated, elapsed_final,
+    polls, poll_failures, last_poll_error,
+) -> dict:
+    result: dict = {
+        payload_key: payload,
+        "status": status,
+        "terminated": terminated,
+        "timed_out": not terminated,
+        "elapsed_seconds": round(elapsed_final, 2),
+        "polls": polls,
+    }
+    if poll_failures:
+        result["poll_failures"] = poll_failures
+        result["last_poll_error"] = last_poll_error
+    return result
+
+
+async def _emit_wait_summary(
+    ctx, label: str, status, terminated: bool, timeout, polls, elapsed_final,
+) -> None:
+    if terminated:
+        level = _TERMINAL_LOG_LEVEL.get(status or "", "info")
+        await _emit_log(
+            ctx, level,
+            f"{label} finished with status={status} "
+            f"after {polls} polls in {elapsed_final:.1f}s",
+        )
+    else:
+        await _emit_log(
+            ctx, "warning",
+            f"{label} did not reach a terminal status "
+            f"in {timeout}s (last status={status}, polls={polls})",
+        )
+
+
 def _poll_error_is_fatal(e: Exception) -> bool:
     """4xx (except 429) won't heal on retry; everything else is budgeted."""
     return (
@@ -3154,6 +3224,7 @@ async def _emit_progress(ctx, progress: float, total, message: str) -> None:
     try:
         await ctx.report_progress(progress=progress, total=total, message=message)
     except Exception:  # noqa: BLE001 - progress is best-effort, never fatal
+        # no-report: MCP progress is decoration, logged at debug; must not abort the wait
         _log_wait.debug("report_progress failed", exc_info=True)
 
 
@@ -3164,6 +3235,7 @@ async def _emit_log(ctx, level: str, message: str) -> None:
     try:
         await ctx.log(level=level, message=message)
     except Exception:  # noqa: BLE001 - log notifications are best-effort
+        # no-report: MCP log notification is decoration, logged at debug; must not abort the wait
         _log_wait.debug("ctx.log failed", exc_info=True)
 
 
@@ -3217,6 +3289,7 @@ def _fetch_failed_job_logs(owner: str, repo: str, jobs: list, log_tail: int) -> 
         try:
             out[jid] = _job_log_tail(owner, repo, jid, log_tail)
         except Exception as e:  # noqa: BLE001 - surface as content, not abort
+            # no-report: the error is returned as this job's log content
             out[jid] = {"error": f"failed to fetch log: {e}"}
     return out
 
@@ -3263,14 +3336,7 @@ async def workflow_runs_wait(
       failed_logs       dict[job_id, log] (when include_failed_logs=True)
       enrichment_error  present if the post-wait jobs/log fetch failed
     """
-    if timeout <= 0:
-        raise ValueError(f"timeout must be > 0, got {timeout}")
-    if interval <= 0:
-        raise ValueError(f"interval must be > 0, got {interval}")
-    if max_poll_failures < 1:
-        raise ValueError(f"max_poll_failures must be >= 1, got {max_poll_failures}")
-    if log_tail < 0:
-        raise ValueError(f"log_tail must be >= 0, got {log_tail}")
+    _blocking_wait_validate(timeout, interval, max_poll_failures, log_tail)
 
     start = time.monotonic()
     previous_status: Optional[str] = None
@@ -3287,6 +3353,7 @@ async def workflow_runs_wait(
         try:
             run = await asyncio.to_thread(_fetch_run_slim, owner, repo, run_id)
         except Exception as e:  # noqa: BLE001 - classified below
+            # no-report: budgeted transient retry; fatal or budget-exhausted re-raises below
             polls += 1
             poll_failures += 1
             consecutive_failures += 1
@@ -3331,31 +3398,13 @@ async def workflow_runs_wait(
         await asyncio.sleep(interval)
 
     elapsed_final = time.monotonic() - start
-    result: dict = {
-        "run": run,
-        "status": status,
-        "terminated": terminated,
-        "timed_out": not terminated,
-        "elapsed_seconds": round(elapsed_final, 2),
-        "polls": polls,
-    }
-    if poll_failures:
-        result["poll_failures"] = poll_failures
-        result["last_poll_error"] = last_poll_error
-
-    if terminated:
-        level = _TERMINAL_LOG_LEVEL.get(status or "", "info")
-        await _emit_log(
-            ctx, level,
-            f"run #{run_id} finished with status={status} "
-            f"after {polls} polls in {elapsed_final:.1f}s",
-        )
-    else:
-        await _emit_log(
-            ctx, "warning",
-            f"run #{run_id} did not reach a terminal status "
-            f"in {timeout}s (last status={status}, polls={polls})",
-        )
+    result = _wait_result(
+        "run", run, status, terminated, elapsed_final,
+        polls, poll_failures, last_poll_error,
+    )
+    await _emit_wait_summary(
+        ctx, f"run #{run_id}", status, terminated, timeout, polls, elapsed_final,
+    )
 
     if include_jobs:
         # A blip here must not discard a wait that already completed -
@@ -3363,6 +3412,7 @@ async def workflow_runs_wait(
         try:
             jobs = await asyncio.to_thread(_fetch_run_jobs_slim, owner, repo, run_id)
         except Exception as e:  # noqa: BLE001 - surface as content, not abort
+            # no-report: returned to the caller as enrichment_error on a finished wait
             result["enrichment_error"] = f"failed to fetch jobs: {e}"
             jobs = None
         if jobs is not None:
@@ -3405,14 +3455,7 @@ async def workflow_jobs_wait(
     instead of `run` and, when include_log=True, a structured `log`
     ({text, total_lines, tail, truncated}).
     """
-    if timeout <= 0:
-        raise ValueError(f"timeout must be > 0, got {timeout}")
-    if interval <= 0:
-        raise ValueError(f"interval must be > 0, got {interval}")
-    if max_poll_failures < 1:
-        raise ValueError(f"max_poll_failures must be >= 1, got {max_poll_failures}")
-    if log_tail < 0:
-        raise ValueError(f"log_tail must be >= 0, got {log_tail}")
+    _blocking_wait_validate(timeout, interval, max_poll_failures, log_tail)
 
     start = time.monotonic()
     previous_status: Optional[str] = None
@@ -3429,6 +3472,7 @@ async def workflow_jobs_wait(
         try:
             job = await asyncio.to_thread(_fetch_job_slim, owner, repo, job_id)
         except Exception as e:  # noqa: BLE001 - classified below
+            # no-report: budgeted transient retry; fatal or budget-exhausted re-raises below
             polls += 1
             poll_failures += 1
             consecutive_failures += 1
@@ -3473,31 +3517,13 @@ async def workflow_jobs_wait(
         await asyncio.sleep(interval)
 
     elapsed_final = time.monotonic() - start
-    result: dict = {
-        "job": job,
-        "status": status,
-        "terminated": terminated,
-        "timed_out": not terminated,
-        "elapsed_seconds": round(elapsed_final, 2),
-        "polls": polls,
-    }
-    if poll_failures:
-        result["poll_failures"] = poll_failures
-        result["last_poll_error"] = last_poll_error
-
-    if terminated:
-        level = _TERMINAL_LOG_LEVEL.get(status or "", "info")
-        await _emit_log(
-            ctx, level,
-            f"job #{job_id} finished with status={status} "
-            f"after {polls} polls in {elapsed_final:.1f}s",
-        )
-    else:
-        await _emit_log(
-            ctx, "warning",
-            f"job #{job_id} did not reach a terminal status "
-            f"in {timeout}s (last status={status}, polls={polls})",
-        )
+    result = _wait_result(
+        "job", job, status, terminated, elapsed_final,
+        polls, poll_failures, last_poll_error,
+    )
+    await _emit_wait_summary(
+        ctx, f"job #{job_id}", status, terminated, timeout, polls, elapsed_final,
+    )
 
     if include_log:
         try:
@@ -3505,6 +3531,7 @@ async def workflow_jobs_wait(
                 _job_log_tail, owner, repo, job_id, log_tail
             )
         except Exception as e:  # noqa: BLE001 - surface as content, not abort
+            # no-report: the error is returned as the log content of a finished wait
             result["log"] = {"error": f"failed to fetch log: {e}"}
 
     return result
@@ -3567,6 +3594,7 @@ async def _enrich_job_final(handle: _WaitHandle) -> None:
             handle.owner, handle.repo, handle.target_id, opts.get("log_tail", 100),
         )
     except Exception as e:  # noqa: BLE001 - surface as content, not abort
+        # no-report: the error is returned as the log content of the final snapshot
         handle.final_extras["log"] = {"error": f"failed to fetch log: {e}"}
 
 
@@ -3589,6 +3617,7 @@ async def _wait_loop(handle: _WaitHandle, do_poll, enrich_final) -> None:
             try:
                 terminal = await do_poll(handle)
             except Exception as e:  # noqa: BLE001 - classified below
+                # no-report: budgeted transient retry; record_poll_failure puts it in the snapshot
                 consecutive_failures += 1
                 handle.record_poll_failure(str(e))
                 if _poll_error_is_fatal(e) or consecutive_failures >= max_failures:
@@ -3604,12 +3633,58 @@ async def _wait_loop(handle: _WaitHandle, do_poll, enrich_final) -> None:
                 try:
                     await enrich_final(handle)
                 except Exception as e:  # noqa: BLE001 - enrichment is best-effort
+                    # no-report: recorded in the snapshot as enrichment_error
                     handle.final_extras["enrichment_error"] = str(e)
                 handle.mark_terminated()
                 return
     except asyncio.CancelledError:
+        # no-report: our own cancel path, re-raised below after recording it
         handle.mark_terminated(error="cancelled")
         raise
+
+
+async def _wait_start_snapshot(handle: _WaitHandle, do_poll, enrich_final, loop_fn):
+    """First poll inline, then either finish or spawn the background loop.
+
+    An already-terminal target never gets a task, so `wait_start` on a finished
+    run answers with the full enriched snapshot straight away.
+    """
+    try:
+        terminal = await do_poll(handle)
+    except Exception as e:  # noqa: BLE001 - reported via snapshot
+        # no-report: reported to the caller in snapshot["error"] instead of raising
+        handle.mark_terminated(error=f"initial poll failed: {e}")
+        return handle.snapshot()
+
+    if terminal:
+        try:
+            await enrich_final(handle)
+        except Exception as e:  # noqa: BLE001 - enrichment is best-effort
+            # no-report: recorded in the snapshot as enrichment_error
+            handle.final_extras["enrichment_error"] = str(e)
+        handle.mark_terminated()
+        return handle.snapshot()
+
+    handle.task = asyncio.create_task(loop_fn(handle))
+    return handle.snapshot()
+
+
+async def _await_terminal_or_timeout(handle: _WaitHandle, max_block: float) -> dict:
+    """Snapshot, optionally after blocking up to `max_block` for terminal.
+
+    `asyncio.wait` rather than `wait_for` so exhausting `max_block` is a normal
+    return with timed_out=True instead of an exception on the read path.
+    """
+    if max_block > 0 and not handle.done_event.is_set():
+        waiter = asyncio.ensure_future(handle.done_event.wait())
+        done, pending = await asyncio.wait({waiter}, timeout=max_block)
+        for task in pending:
+            task.cancel()
+        if not done:
+            snap = handle.snapshot()
+            snap["timed_out"] = True
+            return snap
+    return handle.snapshot()
 
 
 async def _run_loop(handle: _WaitHandle) -> None:
@@ -3621,15 +3696,26 @@ async def _job_loop(handle: _WaitHandle) -> None:
 
 
 async def _cancel_handle(handle: _WaitHandle) -> None:
-    """Cancel the task; defensively mark cancelled if the loop's handler
-    never ran (cancel can land before the first await)."""
+    """Cancel the polling task and make sure the handle ends up terminal.
+
+    The loop's own CancelledError handler normally records the cancel, but a
+    cancel can land before its first await; and the task may already be dying
+    of a real error, which must be reported as that error rather than being
+    relabelled "cancelled".
+    """
     task = handle.task
     if task is not None and not task.done():
         task.cancel()
         try:
             await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001 - defensive
+        except asyncio.CancelledError:
+            # no-report: the expected outcome of the cancel we just issued
             pass
+        except Exception as e:  # noqa: BLE001 - the task died of its own error
+            # no-report: recorded on the handle so the snapshot names the real failure
+            if not handle.done_event.is_set():
+                handle.mark_terminated(error=f"wait task failed: {e}")
+            return
     if not handle.done_event.is_set():
         handle.mark_terminated(error="cancelled")
 
@@ -3649,15 +3735,25 @@ def _require_handle(wait_id: str, expected_kind: str) -> _WaitHandle:
     return handle
 
 
-def _start_options_validate(interval, max_poll_failures, max_lifetime, log_tail):
+def _poll_options_validate(interval, max_poll_failures, log_tail):
     if interval <= 0:
         raise ValueError(f"interval must be > 0, got {interval}")
     if max_poll_failures < 1:
         raise ValueError(f"max_poll_failures must be >= 1, got {max_poll_failures}")
-    if max_lifetime < 0:
-        raise ValueError(f"max_lifetime must be >= 0, got {max_lifetime}")
     if log_tail < 0:
         raise ValueError(f"log_tail must be >= 0, got {log_tail}")
+
+
+def _start_options_validate(interval, max_poll_failures, max_lifetime, log_tail):
+    _poll_options_validate(interval, max_poll_failures, log_tail)
+    if max_lifetime < 0:
+        raise ValueError(f"max_lifetime must be >= 0, got {max_lifetime}")
+
+
+def _blocking_wait_validate(timeout, interval, max_poll_failures, log_tail):
+    if timeout <= 0:
+        raise ValueError(f"timeout must be > 0, got {timeout}")
+    _poll_options_validate(interval, max_poll_failures, log_tail)
 
 
 @_op(gitea_read)
@@ -3699,23 +3795,9 @@ async def workflow_runs_wait_start(
         "log_tail": log_tail,
     }
     handle = _WAIT_REGISTRY.new_handle("run", owner, repo, run_id, options)
-
-    try:
-        terminal = await _do_run_poll(handle)
-    except Exception as e:  # noqa: BLE001 - reported via snapshot
-        handle.mark_terminated(error=f"initial poll failed: {e}")
-        return handle.snapshot()
-
-    if terminal:
-        try:
-            await _enrich_run_final(handle)
-        except Exception as e:  # noqa: BLE001 - enrichment is best-effort
-            handle.final_extras["enrichment_error"] = str(e)
-        handle.mark_terminated()
-        return handle.snapshot()
-
-    handle.task = asyncio.create_task(_run_loop(handle))
-    return handle.snapshot()
+    return await _wait_start_snapshot(
+        handle, _do_run_poll, _enrich_run_final, _run_loop,
+    )
 
 
 @_op(gitea_read)
@@ -3740,14 +3822,7 @@ async def workflow_runs_wait_poll(
     if max_block < 0:
         raise ValueError(f"max_block must be >= 0, got {max_block}")
     handle = _require_handle(wait_id, expected_kind="run")
-    if max_block > 0 and not handle.done_event.is_set():
-        try:
-            await asyncio.wait_for(handle.done_event.wait(), timeout=max_block)
-        except asyncio.TimeoutError:
-            snap = handle.snapshot()
-            snap["timed_out"] = True
-            return snap
-    return handle.snapshot()
+    return await _await_terminal_or_timeout(handle, max_block)
 
 
 @_op(gitea_read)
@@ -3793,23 +3868,9 @@ async def workflow_jobs_wait_start(
         "log_tail": log_tail,
     }
     handle = _WAIT_REGISTRY.new_handle("job", owner, repo, job_id, options)
-
-    try:
-        terminal = await _do_job_poll(handle)
-    except Exception as e:  # noqa: BLE001 - reported via snapshot
-        handle.mark_terminated(error=f"initial poll failed: {e}")
-        return handle.snapshot()
-
-    if terminal:
-        try:
-            await _enrich_job_final(handle)
-        except Exception as e:  # noqa: BLE001 - enrichment is best-effort
-            handle.final_extras["enrichment_error"] = str(e)
-        handle.mark_terminated()
-        return handle.snapshot()
-
-    handle.task = asyncio.create_task(_job_loop(handle))
-    return handle.snapshot()
+    return await _wait_start_snapshot(
+        handle, _do_job_poll, _enrich_job_final, _job_loop,
+    )
 
 
 @_op(gitea_read)
@@ -3821,14 +3882,7 @@ async def workflow_jobs_wait_poll(
     if max_block < 0:
         raise ValueError(f"max_block must be >= 0, got {max_block}")
     handle = _require_handle(wait_id, expected_kind="job")
-    if max_block > 0 and not handle.done_event.is_set():
-        try:
-            await asyncio.wait_for(handle.done_event.wait(), timeout=max_block)
-        except asyncio.TimeoutError:
-            snap = handle.snapshot()
-            snap["timed_out"] = True
-            return snap
-    return handle.snapshot()
+    return await _await_terminal_or_timeout(handle, max_block)
 
 
 @_op(gitea_read)
