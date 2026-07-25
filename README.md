@@ -90,7 +90,13 @@ Params are validated strictly via Pydantic: unknown keys, wrong types, and missi
 
 ## Development
 
-The project uses npm scripts for the local test lifecycle:
+`dev.py` is the single gate entry point (dev-script contract): `lint`
+(ruff + tackbox), `e2e` (boots the dockerized Gitea, runs the integration
+suite), `test` (unit + e2e), `check` (lint + test). Pre-commit and CI both
+run `./dev.py check` — install the hook once per clone with
+`pre-commit install`.
+
+npm scripts cover the docker lifecycle around it:
 
 ```bash
 # unit tests (no docker, fast)
