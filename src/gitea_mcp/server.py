@@ -20,7 +20,7 @@ from pydantic import (
 from pydantic_core import PydanticUndefined
 
 from . import tools as _tools_module
-from .registry import ROOT, _UNSET, _Unset
+from .registry import _UNSET, ROOT, _Unset
 from .wait_registry import WAIT_REGISTRY as _WAIT_REGISTRY
 
 mcp = FastMCP("gitea")

@@ -13,11 +13,7 @@ import asyncio
 
 import httpx
 import pytest
-
-import gitea_mcp.tools as tools_mod
-from gitea_mcp.client import GiteaError
 from waiter_fixtures import (
-    tools_state,
     JOB_LOGS_PATH,
     JOB_PATH,
     RUN_JOBS_PATH,
@@ -26,7 +22,11 @@ from waiter_fixtures import (
     make_handler,
     run_payload,
     seed,
+    tools_state,
 )
+
+import gitea_mcp.tools as tools_mod
+from gitea_mcp.client import GiteaError
 
 
 @pytest.fixture(autouse=True)

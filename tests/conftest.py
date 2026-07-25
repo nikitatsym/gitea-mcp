@@ -25,7 +25,7 @@ import pytest
 
 import gitea_mcp.tools as _tools
 from gitea_mcp.config import set_allow_public
-from gitea_mcp.server import mcp, _all_grouped, _to_pascal
+from gitea_mcp.server import _all_grouped, _to_pascal, mcp
 
 TESTS_DIR = Path(__file__).parent
 ENV_FILE = TESTS_DIR / ".env"
@@ -138,7 +138,7 @@ class AgentSimulator:
 
 
 def wait_for_pr_mergeable(
-    agent: "AgentSimulator",
+    agent: AgentSimulator,
     owner: str,
     repo: str,
     index: int,
@@ -208,7 +208,7 @@ def wait_for_pr_mergeable(
 
 
 def wait_for_workflow_run(
-    agent: "AgentSimulator",
+    agent: AgentSimulator,
     owner: str,
     repo: str,
     *,
