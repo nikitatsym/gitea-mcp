@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 import os
 import subprocess
 import tempfile
@@ -21,8 +20,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
+import gitea_mcp.tools as _tools
+from gitea_mcp.config import set_allow_public
 from gitea_mcp.server import mcp, _all_grouped, _to_pascal
 
 TESTS_DIR = Path(__file__).parent
@@ -89,12 +91,14 @@ class AgentSimulator:
             self._tools[tool.name] = tool.fn
 
     def call(self, tool_name: str, **kwargs) -> Any:
-        """Call an MCP tool by name and return parsed result."""
-        result = self.call_raw(tool_name, **kwargs)
-        try:
-            return json.loads(result)
-        except (json.JSONDecodeError, TypeError):
-            return result
+        """Call an MCP tool by name and return its result.
+
+        Tools hand back Python objects (dict/list) already, or plain text for
+        the raw endpoints (diffs, archives, logs) — nothing on this path needs
+        JSON decoding. `call_raw` is the same thing, named at the call site
+        where the test deliberately wants unparsed text.
+        """
+        return self.call_raw(tool_name, **kwargs)
 
     def call_raw(self, tool_name: str, **kwargs) -> Any:
         """Call an MCP tool and return its raw result.
@@ -203,6 +207,54 @@ def wait_for_pr_mergeable(
     )
 
 
+def wait_for_workflow_run(
+    agent: "AgentSimulator",
+    owner: str,
+    repo: str,
+    *,
+    timeout: float = 20.0,
+    interval: float = 0.5,
+) -> dict:
+    """Block until a dispatched workflow run is recorded, then return it.
+
+    `dispatch_workflow` answers 204 before the run row exists, so reading it
+    back needs a poll. With no act_runner registered the run then parks in
+    `queued` forever — which is enough for the run/job read ops.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        runs = agent.call("list_workflow_runs", owner=owner, repo=repo)
+        if runs:
+            return runs[0]
+        time.sleep(interval)
+    raise AssertionError(
+        f"No workflow run appeared for {owner}/{repo} within {timeout}s after "
+        "dispatch. Check that GITEA__actions__ENABLED is set and that the "
+        "workflow file declares `on: workflow_dispatch`."
+    )
+
+
+def upload_generic_package(
+    name: str,
+    version: str,
+    filename: str,
+    content: bytes,
+) -> None:
+    """Publish a generic package so the package read/delete ops have a target.
+
+    Gitea's upload endpoint lives outside /api/v1 and has no MCP tool, so this
+    is provisioning done over raw HTTP — the package ops are what's under test.
+    """
+    r = httpx.put(
+        f"{os.environ['GITEA_URL']}/api/packages/{ADMIN_USER}/generic/"
+        f"{name}/{version}/{filename}",
+        headers={"Authorization": f"token {os.environ['GITEA_TOKEN']}"},
+        content=content,
+        timeout=30.0,
+    )
+    r.raise_for_status()
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
@@ -246,10 +298,7 @@ def configure_env(gitea_instance: str, gitea_token: str):
     os.environ["GITEA_URL"] = gitea_instance
     os.environ["GITEA_TOKEN"] = gitea_token
 
-    from gitea_mcp.config import set_allow_public
     set_allow_public(True)
-
-    import gitea_mcp.tools as _tools
     _tools._client = None
     yield
     _tools._client = None

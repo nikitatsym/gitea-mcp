@@ -12,6 +12,7 @@ import pytest
 from pydantic import Field
 
 from gitea_mcp import server
+from gitea_mcp.registry import _UNSET
 from gitea_mcp.server import _build_help, _build_params_model
 
 
@@ -139,8 +140,6 @@ class TestHelpUnsetRendering:
     leak that into the output as `=PydanticUndefined`."""
 
     def test_unset_default_renders_as_optional_no_default(self):
-        from gitea_mcp.registry import _UNSET
-
         def fn_with_unset(owner: str, milestone: int = _UNSET):
             """Op with a sentinel-defaulted optional param."""
 

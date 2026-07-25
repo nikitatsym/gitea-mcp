@@ -67,7 +67,8 @@ def wait_for_ready(url: str, timeout: int) -> None:
                 print(f"[bootstrap] ready after {elapsed}s ({attempts} attempts)")
                 return
             last_error = f"HTTP {r.status_code}"
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - container not up yet
+            # no-report: container not up yet is expected; last error goes into the TimeoutError
             last_error = type(e).__name__
         if attempts % 6 == 0:
             elapsed = int(timeout - (deadline - time.time()))
@@ -123,7 +124,8 @@ def existing_token_works(url: str) -> str | None:
         )
         if r.status_code == 200:
             return token
-    except Exception:
+    except Exception:  # noqa: BLE001 - any failure means "re-mint"
+        # no-report: an unusable cached token just means the caller mints a fresh one
         return None
     return None
 
@@ -183,6 +185,7 @@ def main() -> int:
     try:
         wait_for_ready(GITEA_URL, READY_TIMEOUT)
     except TimeoutError as e:
+        # no-report: top-level CLI failure report - stderr message plus exit code 1
         print(f"[bootstrap] FAILED: {e}", file=sys.stderr)
         return 1
 
@@ -190,7 +193,7 @@ def main() -> int:
 
     existing = existing_token_works(GITEA_URL)
     if existing:
-        print(f"[bootstrap] existing token still valid — no-op")
+        print("[bootstrap] existing token still valid — no-op")
         # Refresh the env file in case admin user/password changed; token stays.
         write_env_file(GITEA_URL, existing)
         print(f"[bootstrap] OK — token: {existing}")

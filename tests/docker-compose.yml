@@ -8,6 +8,8 @@ services:
       - GITEA__actions__ENABLED=true
       - GITEA__actions__DEFAULT_ACTIONS_URL=https://github.com
       - GITEA__api__ENABLE_SWAGGER=true
+      # Registers /api/v1/nodeinfo, which the GetNodeinfo op needs.
+      - GITEA__federation__ENABLED=true
       - GITEA__service__DISABLE_REGISTRATION=false
       - GITEA__service__REQUIRE_SIGNIN_VIEW=false
     ports:

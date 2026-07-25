@@ -1,6 +1,7 @@
 import sys
 
 from .config import set_allow_public
+from .server import mcp
 
 
 def main():
@@ -8,5 +9,4 @@ def main():
         sys.argv.remove("--allow-public")
         set_allow_public(True)
 
-    from .server import mcp
     mcp.run(transport="stdio")

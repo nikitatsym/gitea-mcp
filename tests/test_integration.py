@@ -8,12 +8,34 @@ The test simulates a realistic agent workflow:
 11. Admin operations → 12. Cleanup
 """
 
-import time
+from contextlib import contextmanager
+
 import pytest
+
+from conftest import (
+    upload_generic_package,
+    wait_for_pr_mergeable,
+    wait_for_workflow_run,
+)
+from gitea_mcp.client import GiteaError
 
 pytestmark = pytest.mark.integration
 
 ADMIN_USER = "testadmin"
+
+
+@contextmanager
+def gitea_error(status: int, message: str):
+    """Assert the wrapped call fails with exactly this Gitea status and body.
+
+    Used where the op cannot succeed in the test environment (no runner, no
+    signing key, nothing orphaned to adopt): the contract gets pinned instead
+    of the failure being waved through.
+    """
+    with pytest.raises(GiteaError) as exc:
+        yield
+    assert exc.value.status == status, f"expected {status}, got: {exc.value}"
+    assert message in str(exc.value.body), f"body missing {message!r}: {exc.value}"
 
 
 @pytest.mark.usefixtures("configure_env")
@@ -36,6 +58,14 @@ class TestAgentWorkflow:
     org_name = None
     team_id = None
     second_issue_index = None
+    workflow_run_id = None
+
+    def _issue(self, agent, index=None):
+        """Read one issue back, to assert the effect of the op just called."""
+        return agent.call("get_issue",
+            owner=self.owner, repo=self.repo_name,
+            index=self.issue_index if index is None else index,
+        )
 
     # ── 1. Connection & General ───────────────────────────────
 
@@ -52,7 +82,8 @@ class TestAgentWorkflow:
     def test_03_user_settings(self, agent):
         """Agent reads and updates user settings."""
         settings = agent.call("get_user_settings")
-        assert "language" in settings or "theme" in settings or isinstance(settings, dict)
+        # Values depend on earlier runs of test_313; the keys are the contract.
+        assert {"language", "theme", "full_name"} <= set(settings)
 
     def test_04_search_users(self, agent):
         """Agent searches for users."""
@@ -369,8 +400,7 @@ jobs:
             index=self.issue_index,
             due_date="2030-12-31T23:59:59Z",
         )
-        # Result should contain the updated issue or deadline info
-        assert result is not None
+        assert result["due_date"].startswith("2030-12-31")
 
     def test_57_issue_reactions(self, agent):
         """Agent adds and lists reactions."""
@@ -411,7 +441,7 @@ jobs:
             index=self.issue_index,
             time=3600,  # 1 hour
         )
-        assert result is not None
+        assert result["time"] == 3600
 
         times = agent.call("list_tracked_times",
             owner=self.owner,
@@ -431,52 +461,47 @@ jobs:
         )
         TestAgentWorkflow.second_issue_index = result["number"]
 
-        agent.call("add_issue_dependency",
-            owner=self.owner,
-            repo=self.repo_name,
-            index=self.issue_index,
-            depends_on_id=self.second_issue_index,
+        dep = dict(
+            owner=self.owner, repo=self.repo_name,
+            index=self.issue_index, depends_on_id=self.second_issue_index,
         )
-        deps = agent.call("list_issue_dependencies",
-            owner=self.owner, repo=self.repo_name, index=self.issue_index,
-        )
-        assert [d["number"] for d in deps] == [self.second_issue_index]
+
+        def listed():
+            return agent.call("list_issue_dependencies",
+                owner=self.owner, repo=self.repo_name, index=self.issue_index,
+            )
+
+        agent.call("add_issue_dependency", **dep)
+        assert [d["number"] for d in listed()] == [self.second_issue_index]
 
         # Remove it again: an open dependency would block closing the issue
         # later in the workflow (Gitea returns 412 on close).
-        agent.call("remove_issue_dependency",
-            owner=self.owner,
-            repo=self.repo_name,
-            index=self.issue_index,
-            depends_on_id=self.second_issue_index,
-        )
-        deps = agent.call("list_issue_dependencies",
-            owner=self.owner, repo=self.repo_name, index=self.issue_index,
-        )
-        assert deps == []
+        agent.call("remove_issue_dependency", **dep)
+        assert listed() == []
 
     def test_61_pin_lock_issue(self, agent):
         """Agent pins and locks an issue."""
-        try:
-            agent.call("pin_issue",
-                owner=self.owner,
-                repo=self.repo_name,
-                index=self.issue_index,
-            )
-        except Exception:
-            pass  # Pin may not be available in all versions
-
+        agent.call("pin_issue",
+            owner=self.owner,
+            repo=self.repo_name,
+            index=self.issue_index,
+        )
         agent.call("lock_issue",
             owner=self.owner,
             repo=self.repo_name,
             index=self.issue_index,
         )
+        issue = self._issue(agent)
+        assert issue["pin_order"] == 1  # stays pinned until test_223 unpins
+        assert issue["is_locked"] is True
+
         # Unlock it so we can still work with it
         agent.call("unlock_issue",
             owner=self.owner,
             repo=self.repo_name,
             index=self.issue_index,
         )
+        assert self._issue(agent)["is_locked"] is False
 
     def test_62_search_issues(self, agent):
         """Agent searches issues."""
@@ -550,18 +575,18 @@ jobs:
         assert len(result) >= 1
 
     def test_76_create_review(self, agent):
-        """Agent creates a review comment (self-review may be restricted)."""
-        try:
-            result = agent.call("create_pull_review",
-                owner=self.owner,
-                repo=self.repo_name,
-                index=self.pr_index,
-                body="LGTM! The feature looks good.",
-                event="COMMENT",
-            )
-            assert result is not None
-        except Exception:
-            pass  # Self-review may be restricted on some Gitea versions
+        """Agent comments on its own PR — Gitea allows COMMENT reviews there
+        (only APPROVED / REQUEST_CHANGES are refused on your own PR)."""
+        result = agent.call("create_pull_review",
+            owner=self.owner,
+            repo=self.repo_name,
+            index=self.pr_index,
+            body="LGTM! The feature looks good.",
+            event="COMMENT",
+        )
+        TestAgentWorkflow._review_id = result["id"]
+        assert result["state"] == "COMMENT"
+        assert result["body"] == "LGTM! The feature looks good."
 
     def test_77_list_reviews(self, agent):
         """Agent lists reviews."""
@@ -570,7 +595,7 @@ jobs:
             repo=self.repo_name,
             index=self.pr_index,
         )
-        assert isinstance(result, list)
+        assert [r["id"] for r in result] == [TestAgentWorkflow._review_id]
 
     def test_78_merge_pr(self, agent):
         """Agent merges the PR."""
@@ -581,7 +606,6 @@ jobs:
         # raise loudly if it goes False or times out so the test failure
         # mode is "Gitea told us no" rather than "405 in the middle of the
         # test for unclear reasons."
-        from conftest import wait_for_pr_mergeable
         wait_for_pr_mergeable(agent, self.owner, self.repo_name, self.pr_index)
 
         agent.call("merge_pull_request",
@@ -659,7 +683,7 @@ jobs:
             content="# Welcome\n\nThis wiki was created by the agent.\n",
             message="Create wiki home page",
         )
-        assert result is not None
+        assert result["title"] == "Home"
 
     def test_91_get_wiki(self, agent):
         """Agent reads the wiki page."""
@@ -758,29 +782,35 @@ jobs:
             repo=self.repo_name,
             variable_name="TEST_VAR",
         )
-        assert var["data"] == "hello_from_agent" or var.get("value") == "hello_from_agent" or "hello_from_agent" in str(var)
+        assert var["data"] == "hello_from_agent"
 
-        # Update
         agent.call("update_action_variable",
             owner=self.owner,
             repo=self.repo_name,
             variable_name="TEST_VAR",
             value="updated_by_agent",
         )
+        assert agent.call("get_action_variable",
+            owner=self.owner,
+            repo=self.repo_name,
+            variable_name="TEST_VAR",
+        )["data"] == "updated_by_agent"
 
-        # List
         variables = agent.call("list_action_variables",
             owner=self.owner,
             repo=self.repo_name,
         )
-        assert isinstance(variables, list)
+        assert [v["name"] for v in variables] == ["TEST_VAR"]
 
-        # Delete
         agent.call("delete_action_variable",
             owner=self.owner,
             repo=self.repo_name,
             variable_name="TEST_VAR",
         )
+        assert agent.call("list_action_variables",
+            owner=self.owner,
+            repo=self.repo_name,
+        ) == []
 
     def test_111_action_secrets(self, agent):
         """Agent manages Action secrets."""
@@ -795,35 +825,40 @@ jobs:
             owner=self.owner,
             repo=self.repo_name,
         )
-        assert isinstance(secrets, list)
+        assert [sec["name"] for sec in secrets] == ["TEST_SECRET"]
 
         agent.call("delete_action_secret",
             owner=self.owner,
             repo=self.repo_name,
             secret_name="TEST_SECRET",
         )
+        assert agent.call("list_action_secrets",
+            owner=self.owner,
+            repo=self.repo_name,
+        ) == []
 
     def test_112_list_workflows(self, agent):
         """Agent lists workflows."""
         result = agent.call("list_workflows", owner=self.owner, repo=self.repo_name)
-        # May have the workflow we created earlier
-        assert result is not None
+        assert [w["path"] for w in result["workflows"]] == [
+            ".gitea/workflows/test.yml"
+        ]
 
     def test_113_dispatch_workflow(self, agent):
-        """Agent dispatches a workflow and checks its run."""
-        # Try to dispatch the workflow we created
-        try:
-            agent.call("dispatch_workflow",
-                owner=self.owner,
-                repo=self.repo_name,
-                workflow_id="test.yml",
-                ref="main",
-                inputs={"greeting": "hello from agent test"},
-            )
-            # Wait a bit for the run to be created
-            time.sleep(3)
-        except Exception:
-            pytest.skip("Workflow dispatch not available (no runner configured)")
+        """Agent dispatches a workflow and reads back the queued run."""
+        agent.call("dispatch_workflow",
+            owner=self.owner,
+            repo=self.repo_name,
+            workflow_id="test.yml",
+            ref="main",
+            inputs={"greeting": "hello from agent test"},
+        )
+        run = wait_for_workflow_run(agent, self.owner, self.repo_name)
+        TestAgentWorkflow.workflow_run_id = run["id"]
+        assert run["event"] == "workflow_dispatch"
+        assert run["path"] == "test.yml@refs/heads/main"
+        # No act_runner is registered, so the run never leaves the queue.
+        assert run["status"] == "queued"
 
     # ── 14. Organization & Teams ──────────────────────────────
 
@@ -870,27 +905,22 @@ jobs:
 
     def test_125_get_team(self, agent):
         """Agent reads the team."""
-        if self.team_id is None:
-            pytest.skip("Team was not created")
         result = agent.call("get_team", team_id=self.team_id)
         assert result["name"] == "developers"
 
     def test_126_list_teams(self, agent):
         """Agent lists org teams."""
         result = agent.call("list_org_teams", org=self.org_name)
-        assert isinstance(result, list)
-        assert len(result) >= 1  # At least the Owners team
+        assert sorted(t["name"] for t in result) == ["Owners", "developers"]
 
     def test_127_team_members(self, agent):
         """Agent adds and lists team members."""
-        if self.team_id is None:
-            pytest.skip("Team was not created")
         agent.call("add_team_member",
             team_id=self.team_id,
             username=ADMIN_USER,
         )
         members = agent.call("list_team_members", team_id=self.team_id)
-        assert isinstance(members, list)
+        assert [m["login"] for m in members] == [ADMIN_USER]
 
     def test_128_org_labels(self, agent):
         """Agent manages org labels."""
@@ -937,19 +967,22 @@ jobs:
             login_name="testuser2",
             active=True,
         )
-        assert result is not None
+        assert result["login"] == "testuser2"
+        assert result["login_name"] == "testuser2"
 
     # ── 17. Misc ──────────────────────────────────────────────
 
     def test_150_render_markdown(self, agent):
         """Agent renders markdown."""
         result = agent.call_raw("render_markdown", text="# Hello\n\n**Bold** text")
-        assert "<h1>" in result.lower() or "<strong>" in result.lower() or "bold" in result.lower()
+        assert "<strong>Bold</strong>" in result
+        assert ">Hello</h1>" in result
 
     def test_151_search_topics(self, agent):
         """Agent searches topics."""
         result = agent.call("search_topics", query="test")
-        assert result is not None
+        # 'test' is one of the topics set on the repo in test_14.
+        assert "test" in [t["topic_name"] for t in result["topics"]]
 
     def test_152_gitignore_templates(self, agent):
         """Agent lists gitignore templates."""
@@ -1002,48 +1035,57 @@ jobs:
         bp = agent.call("get_branch_protection",
             owner=self.owner, repo=self.repo_name, name="main",
         )
-        assert bp is not None
+        assert bp["branch_name"] == "main"
+        assert bp["enable_push"] is False
 
-        agent.call("edit_branch_protection",
+        edited = agent.call("edit_branch_protection",
             owner=self.owner, repo=self.repo_name, name="main",
             enable_push=True,
         )
+        assert edited["enable_push"] is True
 
         bps = agent.call("list_branch_protections",
             owner=self.owner, repo=self.repo_name,
         )
-        assert isinstance(bps, list)
+        assert [b["branch_name"] for b in bps] == ["main"]
 
         agent.call("delete_branch_protection",
             owner=self.owner, repo=self.repo_name, name="main",
         )
+        assert agent.call("list_branch_protections",
+            owner=self.owner, repo=self.repo_name,
+        ) == []
 
     def test_163_tag_protection_crud(self, agent):
         """Agent manages tag protection rules."""
-        try:
-            result = agent.call("create_tag_protection",
-                owner=self.owner, repo=self.repo_name,
-                name_pattern="v*",
-            )
-            tp_id = result["id"]
+        # Gitea rejects a rule with both whitelists empty (400).
+        result = agent.call("create_tag_protection",
+            owner=self.owner, repo=self.repo_name,
+            name_pattern="v*",
+            whitelist_usernames=[ADMIN_USER],
+        )
+        tp_id = result["id"]
+        assert result["name_pattern"] == "v*"
+        assert result["whitelist_usernames"] == [ADMIN_USER]
 
-            tp = agent.call("get_tag_protection",
-                owner=self.owner, repo=self.repo_name,
-                tag_protection_id=tp_id,
-            )
-            assert tp is not None
+        tp = agent.call("get_tag_protection",
+            owner=self.owner, repo=self.repo_name,
+            tag_protection_id=tp_id,
+        )
+        assert tp["id"] == tp_id
 
-            tps = agent.call("list_tag_protections",
-                owner=self.owner, repo=self.repo_name,
-            )
-            assert isinstance(tps, list)
+        tps = agent.call("list_tag_protections",
+            owner=self.owner, repo=self.repo_name,
+        )
+        assert [t["id"] for t in tps] == [tp_id]
 
-            agent.call("delete_tag_protection",
-                owner=self.owner, repo=self.repo_name,
-                tag_protection_id=tp_id,
-            )
-        except Exception:
-            pass  # Tag protection may not be available in all versions
+        agent.call("delete_tag_protection",
+            owner=self.owner, repo=self.repo_name,
+            tag_protection_id=tp_id,
+        )
+        assert agent.call("list_tag_protections",
+            owner=self.owner, repo=self.repo_name,
+        ) == []
 
     # ── 20. New tools: Issue extras ──────────────────────────
 
@@ -1056,14 +1098,12 @@ jobs:
         assert isinstance(timeline, list)
 
     def test_165_delete_issue_deadline(self, agent):
-        """Agent removes a deadline from an issue."""
-        try:
-            agent.call("delete_issue_deadline",
-                owner=self.owner, repo=self.repo_name,
-                index=self.issue_index,
-            )
-        except Exception:
-            pass  # May fail if no deadline set
+        """Agent removes the deadline set in test_56."""
+        agent.call("delete_issue_deadline",
+            owner=self.owner, repo=self.repo_name,
+            index=self.issue_index,
+        )
+        assert self._issue(agent)["due_date"] is None
 
     def test_166_repo_issue_comments(self, agent):
         """Agent lists all issue comments in repo."""
@@ -1100,19 +1140,23 @@ jobs:
         var = agent.call("get_org_action_variable",
             org=self.org_name, variable_name="ORG_TEST_VAR",
         )
-        assert var is not None
+        assert var["data"] == "org_value"
 
         agent.call("update_org_action_variable",
             org=self.org_name, variable_name="ORG_TEST_VAR",
             value="updated_org_value",
         )
+        assert agent.call("get_org_action_variable",
+            org=self.org_name, variable_name="ORG_TEST_VAR",
+        )["data"] == "updated_org_value"
 
         variables = agent.call("list_org_action_variables", org=self.org_name)
-        assert isinstance(variables, list)
+        assert [v["name"] for v in variables] == ["ORG_TEST_VAR"]
 
         agent.call("delete_org_action_variable",
             org=self.org_name, variable_name="ORG_TEST_VAR",
         )
+        assert agent.call("list_org_action_variables", org=self.org_name) == []
 
     def test_169_org_action_secrets(self, agent):
         """Agent manages org action secrets."""
@@ -1123,28 +1167,26 @@ jobs:
         )
 
         secrets = agent.call("list_org_action_secrets", org=self.org_name)
-        assert isinstance(secrets, list)
+        assert [sec["name"] for sec in secrets] == ["ORG_SECRET"]
 
         agent.call("delete_org_action_secret",
             org=self.org_name, secret_name="ORG_SECRET",
         )
+        assert agent.call("list_org_action_secrets", org=self.org_name) == []
 
     # ── 23. New tools: Org members ───────────────────────────
 
     def test_170_org_membership(self, agent):
         """Agent checks and manages org membership."""
         members = agent.call("list_org_members", org=self.org_name)
-        assert isinstance(members, list)
+        assert [m["login"] for m in members] == [ADMIN_USER]
 
-        try:
-            agent.call("check_org_membership",
-                org=self.org_name, username=ADMIN_USER,
-            )
-        except Exception:
-            pass  # May return 404 for redirect
+        agent.call("check_org_membership",
+            org=self.org_name, username=ADMIN_USER,
+        )
 
         public = agent.call("list_org_public_members", org=self.org_name)
-        assert isinstance(public, list)
+        assert [m["login"] for m in public] == [ADMIN_USER]
 
     # ── 24. New tools: User emails/OAuth2/blocks ─────────────
 
@@ -1186,27 +1228,24 @@ jobs:
         assert isinstance(blocked, list)
 
     def test_175_check_following(self, agent):
-        """Agent checks following relationship."""
-        try:
+        """Agent checks a following relationship it hasn't established yet."""
+        # test_310 covers the positive side after actually following.
+        with gitea_error(404, "not found"):
             agent.call("check_user_following",
                 username=ADMIN_USER, target="testuser2",
             )
-        except Exception:
-            pass  # 404 means not following, which is expected
 
     # ── 25. New tools: Notifications expansion ───────────────
 
     def test_176_notification_count(self, agent):
         """Agent checks notification count."""
-        result = agent.call("get_new_notification_count")
-        assert result is not None
+        assert agent.call("get_new_notification_count") == {"new": 0}
 
     def test_177_repo_notifications(self, agent):
         """Agent lists repo notifications."""
-        result = agent.call("list_repo_notifications",
+        assert agent.call("list_repo_notifications",
             owner=self.owner, repo=self.repo_name,
-        )
-        assert isinstance(result, list)
+        ) == []
 
     # ── 26. New tools: Repo extras ───────────────────────────
 
@@ -1226,54 +1265,43 @@ jobs:
 
     def test_180_collaborator_permission(self, agent):
         """Agent checks collaborator permission."""
-        try:
-            result = agent.call("get_repo_collaborator_permission",
-                owner=self.owner, repo=self.repo_name,
-                collaborator=ADMIN_USER,
-            )
-            assert result is not None
-        except Exception:
-            pass  # Owner may not be considered a collaborator
+        result = agent.call("get_repo_collaborator_permission",
+            owner=self.owner, repo=self.repo_name,
+            collaborator=ADMIN_USER,
+        )
+        assert result["permission"] == "owner"
+        assert result["user"]["login"] == ADMIN_USER
 
     def test_181_repo_refs(self, agent):
         """Agent lists git refs."""
-        try:
-            result = agent.call("list_repo_refs",
-                owner=self.owner, repo=self.repo_name,
-            )
-            assert isinstance(result, list)
-        except Exception:
-            pass  # Some Gitea versions may not support this
+        result = agent.call("list_repo_refs",
+            owner=self.owner, repo=self.repo_name,
+        )
+        assert "refs/heads/main" in [r["ref"] for r in result]
 
     def test_182_git_tree(self, agent):
         """Agent gets git tree."""
         commits = agent.call("list_commits", owner=self.owner, repo=self.repo_name)
         sha = commits[0]["sha"]
         result = agent.call("get_git_tree",
-            owner=self.owner, repo=self.repo_name, sha=sha,
+            owner=self.owner, repo=self.repo_name, sha=sha, recursive=True,
         )
-        assert result is not None
+        assert "src/hello.py" in [entry["path"] for entry in result["tree"]]
 
     def test_183_repo_teams(self, agent):
-        """Agent lists repo teams."""
-        try:
-            result = agent.call("list_repo_teams",
+        """Agent lists teams of a user-owned repo — Gitea serves this only for
+        org repos (405). The org-repo path is covered in test_330."""
+        with gitea_error(405, "repo is not owned by an organization"):
+            agent.call("list_repo_teams",
                 owner=self.owner, repo=self.repo_name,
             )
-            assert isinstance(result, list)
-        except Exception:
-            pass  # Only applicable for org repos
 
     # ── 27. New tools: Admin expansion ───────────────────────
 
     def test_184_admin_list_repos(self, agent):
         """Agent lists all repos (admin) via search."""
-        # admin_list_repos may not exist on all Gitea versions
-        try:
-            result = agent.call("admin_list_repos")
-            assert isinstance(result, list)
-        except Exception:
-            pass  # Endpoint may not be available
+        result = agent.call("admin_list_repos")
+        assert f"{self.owner}/{self.repo_name}" in [r["full_name"] for r in result]
 
     def test_185_admin_list_emails(self, agent):
         """Agent lists all emails (admin)."""
@@ -1290,12 +1318,14 @@ jobs:
     def test_187_gitignore_template_detail(self, agent):
         """Agent gets a specific gitignore template."""
         result = agent.call("get_gitignore_template", name="Python")
-        assert result is not None
+        assert result["name"] == "Python"
+        assert "__pycache__/" in result["source"]
 
     def test_188_license_template_detail(self, agent):
         """Agent gets a specific license template."""
         result = agent.call("get_license_template", name="MIT")
-        assert result is not None
+        assert result["key"] == "MIT"
+        assert "MIT License" in result["body"]
 
     # ── 29. Close issue ──────────────────────────────────────
 
@@ -1340,21 +1370,19 @@ jobs:
 
     def test_194_fork_and_list_forks(self, agent):
         """Agent forks the repo and lists forks."""
-        # Fork as testuser2 is not possible via admin token, fork to self under new name
-        try:
-            result = agent.call("fork_repo",
-                owner=self.owner, repo=self.repo_name,
-                name="agent-test-repo-fork",
-            )
-            assert result["name"] == "agent-test-repo-fork"
-            forks = agent.call("list_forks",
-                owner=self.owner, repo=self.repo_name,
-            )
-            assert isinstance(forks, list)
-            # Cleanup fork
-            agent.call("delete_repo", owner=self.owner, repo="agent-test-repo-fork")
-        except Exception:
-            pass  # Fork to self may fail
+        # Forking as testuser2 needs that user's token; fork to self instead.
+        result = agent.call("fork_repo",
+            owner=self.owner, repo=self.repo_name,
+            name="agent-test-repo-fork",
+        )
+        assert result["name"] == "agent-test-repo-fork"
+        forks = agent.call("list_forks",
+            owner=self.owner, repo=self.repo_name,
+        )
+        assert [f["full_name"] for f in forks] == [
+            f"{self.owner}/agent-test-repo-fork"
+        ]
+        agent.call("delete_repo", owner=self.owner, repo="agent-test-repo-fork")
 
     def test_195_list_repo_activities(self, agent):
         """Agent lists repo activity feed."""
@@ -1364,20 +1392,16 @@ jobs:
         assert isinstance(result, list)
 
     def test_196_get_signing_key(self, agent):
-        """Agent gets the signing key."""
-        try:
-            result = agent.call_raw("get_signing_key")
-            assert result is not None
-        except Exception:
-            pass  # May return empty if no key configured
+        """Agent asks for the instance signing key — the test instance has no
+        [repository.signing] key configured, so Gitea says so outright."""
+        with gitea_error(404, "no signing key"):
+            agent.call_raw("get_signing_key")
 
     def test_197_get_nodeinfo(self, agent):
-        """Agent gets nodeinfo."""
-        try:
-            result = agent.call("get_nodeinfo")
-            assert result is not None
-        except Exception:
-            pass  # Not available in all Gitea versions
+        """Agent gets nodeinfo (route needs GITEA__federation__ENABLED)."""
+        result = agent.call("get_nodeinfo")
+        assert result["software"]["name"] == "gitea"
+        assert result["protocols"] == ["activitypub"]
 
     def test_198_list_repo_reviewers(self, agent):
         """Agent lists repo reviewers."""
@@ -1388,25 +1412,22 @@ jobs:
 
     def test_199_get_repo_archive(self, agent):
         """Agent downloads a repo archive."""
-        try:
-            result = agent.call_raw("get_repo_archive",
-                owner=self.owner, repo=self.repo_name,
-                archive="main.tar.gz",
-            )
-            assert result is not None
-        except Exception:
-            pass  # Binary content may not parse
+        result = agent.call_raw("get_repo_archive",
+            owner=self.owner, repo=self.repo_name,
+            archive="main.tar.gz",
+        )
+        assert len(result) > 0
 
     def test_200_get_repo_git_notes(self, agent):
-        """Agent gets git notes for a commit."""
+        """Agent asks for a git note on a commit that has none."""
         commits = agent.call("list_commits", owner=self.owner, repo=self.repo_name)
         sha = commits[0]["sha"]
-        try:
+        # Gitea reports a missing note as a missing commit; pushing a real note
+        # needs git over SSH/HTTP, which is outside the MCP surface.
+        with gitea_error(404, "commit doesn't exist"):
             agent.call("get_repo_git_notes",
                 owner=self.owner, repo=self.repo_name, sha=sha,
             )
-        except Exception:
-            pass  # 404 if no notes exist
 
     # ── 31. Commits extended ──────────────────────────────────
 
@@ -1426,7 +1447,7 @@ jobs:
         result = agent.call_raw("get_commit_diff",
             owner=self.owner, repo=self.repo_name, sha=sha,
         )
-        assert result is not None
+        assert result.startswith("diff --git")
 
     def test_203_list_commit_statuses(self, agent):
         """Agent lists commit statuses."""
@@ -1440,9 +1461,12 @@ jobs:
     # ── 32. Issues extended ───────────────────────────────────
 
     def test_210_search_issues(self, agent):
-        """Agent searches issues globally."""
-        result = agent.call("search_issues", query="bug")
-        assert result is not None
+        """Agent searches issues globally.
+
+        The first issue is closed by test_190 and Gitea's default search state
+        is 'open', so the query targets the still-open second issue."""
+        result = agent.call("search_issues", query="Prerequisite")
+        assert "Prerequisite task" in [i["title"] for i in result]
 
     def test_211_list_issue_comments(self, agent):
         """Agent lists comments on a specific issue."""
@@ -1519,28 +1543,23 @@ jobs:
 
     def test_219_stopwatch_ops(self, agent):
         """Agent starts, stops, and deletes a stopwatch."""
-        try:
-            agent.call("start_stopwatch",
-                owner=self.owner, repo=self.repo_name,
-                index=self.second_issue_index,
-            )
-            agent.call("stop_stopwatch",
-                owner=self.owner, repo=self.repo_name,
-                index=self.second_issue_index,
-            )
-        except Exception:
-            pass  # Stopwatch may already be running or not available
-        try:
-            agent.call("start_stopwatch",
-                owner=self.owner, repo=self.repo_name,
-                index=self.second_issue_index,
-            )
-            agent.call("delete_stopwatch",
-                owner=self.owner, repo=self.repo_name,
-                index=self.second_issue_index,
-            )
-        except Exception:
-            pass
+        agent.call("start_stopwatch",
+            owner=self.owner, repo=self.repo_name,
+            index=self.second_issue_index,
+        )
+        agent.call("stop_stopwatch",
+            owner=self.owner, repo=self.repo_name,
+            index=self.second_issue_index,
+        )
+        # A second start is only possible because the first one was stopped.
+        agent.call("start_stopwatch",
+            owner=self.owner, repo=self.repo_name,
+            index=self.second_issue_index,
+        )
+        agent.call("delete_stopwatch",
+            owner=self.owner, repo=self.repo_name,
+            index=self.second_issue_index,
+        )
 
     def test_220_delete_tracked_time(self, agent):
         """Agent deletes a tracked time entry."""
@@ -1548,44 +1567,47 @@ jobs:
             owner=self.owner, repo=self.repo_name,
             index=self.issue_index,
         )
-        if times:
-            agent.call("delete_tracked_time",
-                owner=self.owner, repo=self.repo_name,
-                index=self.issue_index,
-                time_id=times[0]["id"],
-            )
+        assert len(times) == 1  # the hour logged in test_59
+        agent.call("delete_tracked_time",
+            owner=self.owner, repo=self.repo_name,
+            index=self.issue_index,
+            time_id=times[0]["id"],
+        )
+        assert agent.call("list_tracked_times",
+            owner=self.owner, repo=self.repo_name,
+            index=self.issue_index,
+        ) == []
 
     def test_221_remove_issue_reaction(self, agent):
-        """Agent removes an issue reaction."""
-        try:
-            agent.call("remove_issue_reaction",
-                owner=self.owner, repo=self.repo_name,
-                index=self.issue_index,
-                reaction="+1",
-            )
-        except Exception:
-            pass
+        """Agent removes the reaction added in test_57."""
+        agent.call("remove_issue_reaction",
+            owner=self.owner, repo=self.repo_name,
+            index=self.issue_index,
+            reaction="+1",
+        )
+        assert agent.call("list_issue_reactions",
+            owner=self.owner, repo=self.repo_name, index=self.issue_index,
+        ) == []
 
     def test_222_remove_comment_reaction(self, agent):
-        """Agent removes a comment reaction."""
-        try:
-            agent.call("remove_comment_reaction",
-                owner=self.owner, repo=self.repo_name,
-                comment_id=self.issue_comment_id,
-                reaction="heart",
-            )
-        except Exception:
-            pass
+        """Agent removes the comment reaction added in test_58."""
+        agent.call("remove_comment_reaction",
+            owner=self.owner, repo=self.repo_name,
+            comment_id=self.issue_comment_id,
+            reaction="heart",
+        )
+        assert agent.call("list_comment_reactions",
+            owner=self.owner, repo=self.repo_name,
+            comment_id=self.issue_comment_id,
+        ) == []
 
     def test_223_unpin_issue(self, agent):
-        """Agent unpins an issue."""
-        try:
-            agent.call("unpin_issue",
-                owner=self.owner, repo=self.repo_name,
-                index=self.issue_index,
-            )
-        except Exception:
-            pass  # May not be pinned
+        """Agent unpins the issue pinned in test_61."""
+        agent.call("unpin_issue",
+            owner=self.owner, repo=self.repo_name,
+            index=self.issue_index,
+        )
+        assert self._issue(agent)["pin_order"] == 0
 
     def test_224_delete_issue_comment(self, agent):
         """Agent deletes an issue comment."""
@@ -1630,30 +1652,26 @@ jobs:
         assert "Updated" in result["description"]
 
     def test_233_edit_org_label(self, agent):
-        """Agent edits an org label."""
-        # Get org label id
+        """Agent edits the label created in test_128."""
         labels = agent.call("list_org_labels", org=self.org_name)
-        if labels:
-            label_id = labels[0]["id"]
-            result = agent.call("edit_org_label",
-                org=self.org_name,
-                label_id=label_id,
-                name="priority:critical",
-                color="#dc2626",
-            )
-            assert result["name"] == "priority:critical"
-            TestAgentWorkflow._org_label_id = label_id
-        else:
-            pytest.skip("No org labels found")
+        assert [label["name"] for label in labels] == ["priority:high"]
+        label_id = labels[0]["id"]
+        result = agent.call("edit_org_label",
+            org=self.org_name,
+            label_id=label_id,
+            name="priority:critical",
+            color="#dc2626",
+        )
+        assert result["name"] == "priority:critical"
+        TestAgentWorkflow._org_label_id = label_id
 
     def test_234_delete_org_label(self, agent):
         """Agent deletes an org label."""
-        label_id = getattr(self, '_org_label_id', None)
-        if label_id:
-            agent.call("delete_org_label",
-                org=self.org_name,
-                label_id=label_id,
-            )
+        agent.call("delete_org_label",
+            org=self.org_name,
+            label_id=TestAgentWorkflow._org_label_id,
+        )
+        assert agent.call("list_org_labels", org=self.org_name) == []
 
     # ── 34. PR extended ───────────────────────────────────────
 
@@ -1690,115 +1708,104 @@ jobs:
         )
         assert "edited" in edited["title"]
 
-        # request_pull_reviewers (may fail for self-review)
-        try:
-            agent.call("request_pull_reviewers",
-                owner=self.owner, repo=self.repo_name,
-                index=pr_idx,
-                reviewers=["testuser2"],
-            )
-        except Exception:
-            pass
+        requested = agent.call("request_pull_reviewers",
+            owner=self.owner, repo=self.repo_name,
+            index=pr_idx,
+            reviewers=["testuser2"],
+        )
+        assert [r["user"]["login"] for r in requested] == ["testuser2"]
 
-        # remove_pull_reviewers
-        try:
-            agent.call("remove_pull_reviewers",
-                owner=self.owner, repo=self.repo_name,
-                index=pr_idx,
-                reviewers=["testuser2"],
-            )
-        except Exception:
-            pass
+        agent.call("remove_pull_reviewers",
+            owner=self.owner, repo=self.repo_name,
+            index=pr_idx,
+            reviewers=["testuser2"],
+        )
 
-        # update_pull_request_branch
-        try:
-            agent.call("update_pull_request_branch",
-                owner=self.owner, repo=self.repo_name,
-                index=pr_idx,
-            )
-        except Exception:
-            pass  # May fail if already up to date
+        # Gitea answers 500 "HeadBranch is up to date" when there is nothing to
+        # pull in, so move base ahead first.
+        agent.call("create_file",
+            owner=self.owner, repo=self.repo_name,
+            filepath="src/base_moved.py",
+            content='print("base moved")\n',
+            message="Move main ahead of the PR branch",
+        )
+        head_before = agent.call("get_branch",
+            owner=self.owner, repo=self.repo_name, branch="feature/pr-test-2",
+        )["commit"]["id"]
+        agent.call("update_pull_request_branch",
+            owner=self.owner, repo=self.repo_name,
+            index=pr_idx,
+        )
+        head_after = agent.call("get_branch",
+            owner=self.owner, repo=self.repo_name, branch="feature/pr-test-2",
+        )["commit"]["id"]
+        assert head_after != head_before
 
     def test_241_pr_review_extended(self, agent):
         """Agent tests submit/dismiss/delete review and review comments."""
-        pr_idx = getattr(self, '_pr2_index', None)
-        if pr_idx is None:
-            pytest.skip("PR2 not created")
+        pr_idx = TestAgentWorkflow._pr2_index
 
-        # Create a review
-        try:
-            review = agent.call("create_pull_review",
-                owner=self.owner, repo=self.repo_name,
-                index=pr_idx,
-                body="Review for testing",
-                event="COMMENT",
-            )
-            review_id = review["id"]
+        # Omitting `event` leaves the review PENDING, which is the only state
+        # submit_pull_review accepts (it 422s on anything already submitted).
+        review = agent.call("create_pull_review",
+            owner=self.owner, repo=self.repo_name,
+            index=pr_idx,
+            body="Review for testing",
+        )
+        review_id = review["id"]
+        assert review["state"] == "PENDING"
 
-            # get_pull_review_comments
-            comments = agent.call("get_pull_review_comments",
+        comments = agent.call("get_pull_review_comments",
+            owner=self.owner, repo=self.repo_name,
+            index=pr_idx,
+            review_id=review_id,
+        )
+        assert comments == []
+
+        submitted = agent.call("submit_pull_review",
+            owner=self.owner, repo=self.repo_name,
+            index=pr_idx,
+            review_id=review_id,
+            body="Submitted",
+            event="COMMENT",
+        )
+        assert submitted["state"] == "COMMENT"
+
+        # Only APPROVED / REQUEST_CHANGES reviews are dismissible, and Gitea
+        # refuses both on your own PR — so 403 is the reachable contract here.
+        with gitea_error(403, "not need to dismiss this review"):
+            agent.call("dismiss_pull_review",
                 owner=self.owner, repo=self.repo_name,
                 index=pr_idx,
                 review_id=review_id,
+                message="Dismissing for test",
             )
-            assert isinstance(comments, list)
 
-            # submit_pull_review
-            try:
-                agent.call("submit_pull_review",
-                    owner=self.owner, repo=self.repo_name,
-                    index=pr_idx,
-                    review_id=review_id,
-                    body="Submitted",
-                    event="COMMENT",
-                )
-            except Exception:
-                pass
-
-            # dismiss_pull_review
-            try:
-                agent.call("dismiss_pull_review",
-                    owner=self.owner, repo=self.repo_name,
-                    index=pr_idx,
-                    review_id=review_id,
-                    message="Dismissing for test",
-                )
-            except Exception:
-                pass
-
-            # delete_pull_review
-            try:
-                agent.call("delete_pull_review",
-                    owner=self.owner, repo=self.repo_name,
-                    index=pr_idx,
-                    review_id=review_id,
-                )
-            except Exception:
-                pass
-        except Exception:
-            pass  # Self-review may be restricted
+        agent.call("delete_pull_review",
+            owner=self.owner, repo=self.repo_name,
+            index=pr_idx,
+            review_id=review_id,
+        )
+        assert review_id not in [
+            r["id"] for r in agent.call("list_pull_reviews",
+                owner=self.owner, repo=self.repo_name, index=pr_idx,
+            )
+        ]
 
     def test_242_cleanup_pr2(self, agent):
-        """Clean up PR2 by merging or closing."""
-        pr_idx = getattr(self, '_pr2_index', None)
-        if pr_idx is None:
-            return
-        try:
-            agent.call("merge_pull_request",
-                owner=self.owner, repo=self.repo_name,
-                index=pr_idx,
-                merge_type="merge",
-                delete_branch_after_merge=True,
-            )
-        except Exception:
-            try:
-                agent.call("edit_pull_request",
-                    owner=self.owner, repo=self.repo_name,
-                    index=pr_idx,
-                    state="closed",
-                )
-            except Exception:
-                pass
+        """Clean up PR2 by merging it."""
+        pr_idx = TestAgentWorkflow._pr2_index
+        wait_for_pr_mergeable(agent, self.owner, self.repo_name, pr_idx)
+        agent.call("merge_pull_request",
+            owner=self.owner, repo=self.repo_name,
+            index=pr_idx,
+            merge_type="merge",
+            delete_branch_after_merge=True,
+        )
+        pr = agent.call("get_pull_request",
+            owner=self.owner, repo=self.repo_name, index=pr_idx,
+        )
+        assert pr["merged"] is True
 
     # ── 35. Releases & Tags extended ──────────────────────────
 
@@ -1811,41 +1818,48 @@ jobs:
 
     def test_251_delete_release(self, agent):
         """Agent deletes a release."""
-        if self.release_id:
-            agent.call("delete_release",
+        agent.call("delete_release",
+            owner=self.owner, repo=self.repo_name,
+            release_id=self.release_id,
+        )
+        with gitea_error(404, "not found"):
+            agent.call("get_release",
                 owner=self.owner, repo=self.repo_name,
                 release_id=self.release_id,
             )
 
     def test_252_delete_tag(self, agent):
         """Agent deletes a tag."""
-        if self.tag_name:
-            agent.call("delete_tag",
+        agent.call("delete_tag",
+            owner=self.owner, repo=self.repo_name,
+            tag=self.tag_name,
+        )
+        assert self.tag_name not in [
+            t["name"] for t in agent.call("list_tags",
                 owner=self.owner, repo=self.repo_name,
-                tag=self.tag_name,
             )
+        ]
 
     # ── 36. Edit tag protection ───────────────────────────────
 
     def test_253_edit_tag_protection(self, agent):
         """Agent edits tag protection."""
-        try:
-            tp = agent.call("create_tag_protection",
-                owner=self.owner, repo=self.repo_name,
-                name_pattern="release-*",
-            )
-            tp_id = tp["id"]
-            agent.call("edit_tag_protection",
-                owner=self.owner, repo=self.repo_name,
-                tag_protection_id=tp_id,
-                name_pattern="release-v*",
-            )
-            agent.call("delete_tag_protection",
-                owner=self.owner, repo=self.repo_name,
-                tag_protection_id=tp_id,
-            )
-        except Exception:
-            pass
+        tp = agent.call("create_tag_protection",
+            owner=self.owner, repo=self.repo_name,
+            name_pattern="release-*",
+            whitelist_usernames=[ADMIN_USER],
+        )
+        tp_id = tp["id"]
+        edited = agent.call("edit_tag_protection",
+            owner=self.owner, repo=self.repo_name,
+            tag_protection_id=tp_id,
+            name_pattern="release-v*",
+        )
+        assert edited["name_pattern"] == "release-v*"
+        agent.call("delete_tag_protection",
+            owner=self.owner, repo=self.repo_name,
+            tag_protection_id=tp_id,
+        )
 
     # ── 37. Webhooks extended ─────────────────────────────────
 
@@ -1862,16 +1876,14 @@ jobs:
             hook_id=hook_id,
             events=["push", "issues"],
         )
-        assert result is not None
+        # Gitea expands 'issues' into its issue_* sub-events.
+        assert {"push", "issues"} <= set(result["events"])
 
-        # test_repo_webhook
-        try:
-            agent.call("test_repo_webhook",
-                owner=self.owner, repo=self.repo_name,
-                hook_id=hook_id,
-            )
-        except Exception:
-            pass  # Target URL may not be reachable
+        # Only queues the delivery, so an unreachable target URL is still 'ok'.
+        agent.call("test_repo_webhook",
+            owner=self.owner, repo=self.repo_name,
+            hook_id=hook_id,
+        )
 
         agent.call("delete_repo_webhook",
             owner=self.owner, repo=self.repo_name,
@@ -1891,7 +1903,7 @@ jobs:
             hook_id=hook_id,
             events=["push", "repository"],
         )
-        assert result is not None
+        assert sorted(result["events"]) == ["push", "repository"]
         agent.call("delete_org_webhook", org=self.org_name, hook_id=hook_id)
 
     # ── 38. Deploy keys ───────────────────────────────────────
@@ -1944,22 +1956,16 @@ jobs:
     # ── 40. GPG keys ─────────────────────────────────────────
 
     def test_272_gpg_keys(self, agent):
-        """Agent manages GPG keys."""
-        keys = agent.call("list_gpg_keys")
-        assert isinstance(keys, list)
-        # Creating/deleting GPG keys requires a valid key, just test list
-        # and try create with invalid key expecting error
-        try:
+        """Agent lists GPG keys and gets rejected on a malformed one."""
+        assert agent.call("list_gpg_keys") == []
+
+        with gitea_error(422, "failed to parse gpg key"):
             agent.call("create_gpg_key",
                 armored_public_key="not-a-real-key",
             )
-        except Exception:
-            pass  # Expected to fail with invalid key
-        # delete_gpg_key - need a real key_id, test with 0
-        try:
-            agent.call("delete_gpg_key", key_id=0)
-        except Exception:
-            pass
+
+        # Gitea's GPG delete is idempotent — unknown ids answer 204, not 404.
+        agent.call("delete_gpg_key", key_id=999999)
 
     # ── 41. Wiki extended ─────────────────────────────────────
 
@@ -2014,52 +2020,40 @@ jobs:
     # ── 43. Notifications extended ────────────────────────────
 
     def test_300_mark_notifications_read(self, agent):
-        """Agent marks notifications as read."""
-        try:
-            agent.call("mark_notifications_read")
-        except Exception:
-            pass
+        """Agent marks notifications as read — nothing to mark, so no threads
+        come back (Gitea never notifies the user who acted)."""
+        assert agent.call("mark_notifications_read") == []
 
     def test_301_mark_repo_notifications_read(self, agent):
         """Agent marks repo notifications as read."""
-        try:
-            agent.call("mark_repo_notifications_read",
-                owner=self.owner, repo=self.repo_name,
-            )
-        except Exception:
-            pass
+        assert agent.call("mark_repo_notifications_read",
+            owner=self.owner, repo=self.repo_name,
+        ) == []
 
     def test_302_notification_thread(self, agent):
-        """Agent gets and marks notification threads."""
-        notifications = agent.call("list_notifications")
-        if notifications:
-            thread_id = notifications[0]["id"]
-            try:
-                result = agent.call("get_notification_thread", thread_id=thread_id)
-                assert result is not None
-            except Exception:
-                pass
-            try:
-                agent.call("mark_notification_read", thread_id=thread_id)
-            except Exception:
-                pass
-        # If no notifications, just test with invalid ID (expect error)
-        else:
-            try:
-                agent.call("get_notification_thread", thread_id=999999)
-            except Exception:
-                pass
-            try:
-                agent.call("mark_notification_read", thread_id=999999)
-            except Exception:
-                pass
+        """Agent reads notification threads."""
+        # Single-actor instance: the only actor is the one who caused every
+        # event, and Gitea skips the doer, so the inbox stays empty.
+        assert agent.call("list_notifications") == []
+
+        with gitea_error(404, "notification does not exist"):
+            agent.call("get_notification_thread", thread_id=999999)
+        with gitea_error(404, "notification does not exist"):
+            agent.call("mark_notification_read", thread_id=999999)
 
     # ── 44. User mgmt extended ────────────────────────────────
 
     def test_310_follow_unfollow(self, agent):
         """Agent follows and unfollows a user."""
         agent.call("follow_user", username="testuser2")
+        agent.call("check_user_following",
+            username=ADMIN_USER, target="testuser2",
+        )
         agent.call("unfollow_user", username="testuser2")
+        with gitea_error(404, "not found"):
+            agent.call("check_user_following",
+                username=ADMIN_USER, target="testuser2",
+            )
 
     def test_311_block_unblock(self, agent):
         """Agent blocks and unblocks a user."""
@@ -2077,19 +2071,22 @@ jobs:
             full_name="Test Admin Updated",
             language="en-US",
         )
-        assert result is not None
+        assert result["full_name"] == "Test Admin Updated"
+        assert result["language"] == "en-US"
 
     def test_314_add_delete_user_email(self, agent):
         """Agent adds and deletes a user email."""
-        try:
-            agent.call("add_user_email",
-                emails=["extra@test.local"],
-            )
-            agent.call("delete_user_email",
-                emails=["extra@test.local"],
-            )
-        except Exception:
-            pass  # Email may already exist or deletion may fail
+        added = agent.call("add_user_email",
+            emails=["extra@test.local"],
+        )
+        assert "extra@test.local" in [e["email"] for e in added]
+
+        agent.call("delete_user_email",
+            emails=["extra@test.local"],
+        )
+        assert "extra@test.local" not in [
+            e["email"] for e in agent.call("list_user_emails")
+        ]
 
     def test_315_list_followers_following(self, agent):
         """Agent lists followers and following."""
@@ -2114,33 +2111,33 @@ jobs:
         var = agent.call("get_user_action_variable",
             variable_name="USER_TEST_VAR",
         )
-        assert var is not None
+        assert var["data"] == "user_value"
 
         agent.call("update_user_action_variable",
             variable_name="USER_TEST_VAR",
             value="updated_user_value",
         )
+        assert agent.call("get_user_action_variable",
+            variable_name="USER_TEST_VAR",
+        )["data"] == "updated_user_value"
 
         variables = agent.call("list_user_action_variables")
-        assert isinstance(variables, list)
+        assert [v["name"] for v in variables] == ["USER_TEST_VAR"]
 
         agent.call("delete_user_action_variable",
             variable_name="USER_TEST_VAR",
         )
+        assert agent.call("list_user_action_variables") == []
 
     def test_321_user_action_secrets(self, agent):
-        """Agent manages user-level action secrets."""
+        """Agent manages user-level action secrets.
+
+        Create/delete only — Gitea exposes a list endpoint for org and repo
+        secrets but none for user secrets, so there is no op to call."""
         agent.call("create_user_action_secret",
             secret_name="USER_SECRET",
             data="secret_data",
         )
-
-        try:
-            secrets = agent.call("list_user_action_secrets")
-            assert isinstance(secrets, list)
-        except Exception:
-            pass  # List endpoint may not exist in all Gitea versions
-
         agent.call("delete_user_action_secret",
             secret_name="USER_SECRET",
         )
@@ -2161,88 +2158,69 @@ jobs:
         assert isinstance(repos, list)
         assert any("org-test-repo" in r.get("full_name", r.get("name", "")) for r in repos)
 
+        # Same op that 405s on a user-owned repo in test_183.
+        teams = agent.call("list_repo_teams",
+            owner=self.org_name, repo="org-test-repo",
+        )
+        assert [t["name"] for t in teams] == ["Owners"]
+
     def test_331_org_public_member_ops(self, agent):
         """Agent manages org public membership."""
-        try:
-            agent.call("set_org_public_member",
-                org=self.org_name, username=ADMIN_USER,
-            )
-        except Exception:
-            pass  # May require specific permissions
-
-        try:
+        agent.call("set_org_public_member",
+            org=self.org_name, username=ADMIN_USER,
+        )
+        agent.call("check_org_public_member",
+            org=self.org_name, username=ADMIN_USER,
+        )
+        agent.call("remove_org_public_member",
+            org=self.org_name, username=ADMIN_USER,
+        )
+        with gitea_error(404, "not found"):
             agent.call("check_org_public_member",
                 org=self.org_name, username=ADMIN_USER,
             )
-        except Exception:
-            pass
-
-        try:
-            agent.call("remove_org_public_member",
-                org=self.org_name, username=ADMIN_USER,
-            )
-        except Exception:
-            pass
 
     # ── 47. Teams extended ────────────────────────────────────
 
     def test_340_edit_team(self, agent):
         """Agent edits a team."""
-        if self.team_id is None:
-            pytest.skip("Team was not created")
         result = agent.call("edit_team",
             team_id=self.team_id,
             description="Updated team description",
         )
-        assert result is not None
+        assert result["description"] == "Updated team description"
 
     def test_341_team_repos(self, agent):
         """Agent manages team repos."""
-        if self.team_id is None:
-            pytest.skip("Team was not created")
-
-        # Add org repo to team
-        try:
-            agent.call("add_team_repo",
-                team_id=self.team_id,
-                org=self.org_name,
-                repo="org-test-repo",
-            )
-        except Exception:
-            pass
-
+        agent.call("add_team_repo",
+            team_id=self.team_id,
+            org=self.org_name,
+            repo="org-test-repo",
+        )
         repos = agent.call("list_team_repos", team_id=self.team_id)
-        assert isinstance(repos, list)
+        assert [r["full_name"] for r in repos] == [f"{self.org_name}/org-test-repo"]
 
-        try:
-            agent.call("check_team_repo",
-                team_id=self.team_id,
-                org=self.org_name,
-                repo="org-test-repo",
-            )
-        except Exception:
-            pass
+        checked = agent.call("check_team_repo",
+            team_id=self.team_id,
+            org=self.org_name,
+            repo="org-test-repo",
+        )
+        assert checked["full_name"] == f"{self.org_name}/org-test-repo"
 
-        try:
-            agent.call("remove_team_repo",
-                team_id=self.team_id,
-                org=self.org_name,
-                repo="org-test-repo",
-            )
-        except Exception:
-            pass
+        agent.call("remove_team_repo",
+            team_id=self.team_id,
+            org=self.org_name,
+            repo="org-test-repo",
+        )
+        assert agent.call("list_team_repos", team_id=self.team_id) == []
 
     def test_342_remove_team_member(self, agent):
         """Agent removes a team member."""
-        if self.team_id is None:
-            pytest.skip("Team was not created")
-        try:
-            agent.call("remove_team_member",
-                team_id=self.team_id,
-                username=ADMIN_USER,
-            )
-        except Exception:
-            pass  # May fail if user is org owner
+        agent.call("remove_team_member",
+            team_id=self.team_id,
+            username=ADMIN_USER,
+        )
+        assert agent.call("list_team_members", team_id=self.team_id) == []
 
     # ── 48. Admin extended ────────────────────────────────────
 
@@ -2252,107 +2230,81 @@ jobs:
         assert isinstance(result, list)
 
     def test_351_admin_create_org(self, agent):
-        """Agent creates an org via admin API."""
-        try:
-            result = agent.call("admin_create_org",
-                username=ADMIN_USER,
-                owner_name="admin-created-org",
-                full_name="Admin Created Org",
-                visibility="public",
-            )
-            assert result is not None
-            # Cleanup
-            try:
-                agent.call("delete_org", org="admin-created-org")
-            except Exception:
-                pass
-        except Exception:
-            pass
+        """Agent creates an org via admin API.
+
+        `username` is the new org's login, `owner_name` the existing user that
+        will own it — the path segment is the owner, not the org."""
+        result = agent.call("admin_create_org",
+            username="admin-created-org",
+            owner_name=ADMIN_USER,
+            full_name="Admin Created Org",
+            visibility="public",
+        )
+        assert result["username"] == "admin-created-org"
+        agent.call("delete_org", org="admin-created-org")
 
     def test_352_admin_create_repo_for_user(self, agent):
         """Agent creates a repo for another user (admin)."""
-        try:
-            result = agent.call("admin_create_repo_for_user",
-                username="testuser2",
-                name="admin-created-repo",
-                description="Created by admin",
-                auto_init=True,
-            )
-            assert result["name"] == "admin-created-repo"
-            # Cleanup
-            agent.call("delete_repo", owner="testuser2", repo="admin-created-repo")
-        except Exception:
-            pass
+        result = agent.call("admin_create_repo_for_user",
+            username="testuser2",
+            name="admin-created-repo",
+            description="Created by admin",
+            auto_init=True,
+        )
+        assert result["name"] == "admin-created-repo"
+        assert result["owner"]["login"] == "testuser2"
+        agent.call("delete_repo", owner="testuser2", repo="admin-created-repo")
 
     def test_353_admin_rename_user(self, agent):
         """Agent renames a user (admin)."""
-        # Create a temp user to rename
-        try:
-            agent.call("admin_create_user",
-                username="temprename",
-                email="temprename@test.local",
-                password="testuser1234",
-                must_change_password=False,
-            )
-            agent.call("admin_rename_user",
-                username="temprename",
-                new_username="temprenamed",
-            )
-            # Cleanup
-            agent.call("admin_delete_user", username="temprenamed", purge=True)
-        except Exception:
-            pass
+        agent.call("admin_create_user",
+            username="temprename",
+            email="temprename@test.local",
+            password="testuser1234",
+            must_change_password=False,
+        )
+        agent.call("admin_rename_user",
+            username="temprename",
+            new_username="temprenamed",
+        )
+        assert agent.call("get_user", username="temprenamed")["login"] == "temprenamed"
+        agent.call("admin_delete_user", username="temprenamed", purge=True)
 
     def test_354_admin_user_public_keys(self, agent, ssh_pubkey):
         """Agent manages user public keys via admin API."""
-        pub_key = ssh_pubkey
-
-        try:
-            result = agent.call("admin_create_user_public_key",
-                username="testuser2",
-                title="admin-test-key",
-                key=pub_key,
-            )
-            key_id = result["id"]
-            agent.call("admin_delete_user_public_key",
-                username="testuser2",
-                key_id=key_id,
-            )
-        except Exception:
-            pass
+        result = agent.call("admin_create_user_public_key",
+            username="testuser2",
+            title="admin-test-key",
+            key=ssh_pubkey,
+        )
+        assert result["title"] == "admin-test-key"
+        agent.call("admin_delete_user_public_key",
+            username="testuser2",
+            key_id=result["id"],
+        )
 
     def test_355_admin_unadopted_repos(self, agent):
-        """Agent lists unadopted repos (admin)."""
-        try:
-            result = agent.call("admin_list_unadopted_repos")
-            assert isinstance(result, list)
-        except Exception:
-            pass  # May return empty or error
+        """Agent lists unadopted repos (admin).
 
-        # adopt/delete_unadopted need actual unadopted repos, just call to verify path
-        try:
+        Nothing is orphaned: every repo on disk has a DB row, and planting a
+        bare repo would need filesystem access inside the container. So adopt
+        and delete-unadopted only have their 404 contract to assert."""
+        assert agent.call("admin_list_unadopted_repos") == []
+
+        with gitea_error(404, "not found"):
             agent.call("admin_adopt_repo",
                 owner=ADMIN_USER, repo="nonexistent-repo",
             )
-        except Exception:
-            pass
-        try:
+        with gitea_error(404, "not found"):
             agent.call("admin_delete_unadopted_repo",
                 owner=ADMIN_USER, repo="nonexistent-repo",
             )
-        except Exception:
-            pass
 
     def test_356_admin_run_cron_job(self, agent):
         """Agent runs a cron job (admin)."""
         crons = agent.call("admin_list_cron_jobs")
-        if crons:
-            try:
-                agent.call("admin_run_cron_job",
-                    task_name=crons[0]["name"],
-                )
-            except Exception:
-                pass
+        assert "update_mirrors" in [c["name"] for c in crons]
+        agent.call("admin_run_cron_job", task_name=crons[0]["name"])
 
     def test_357_admin_search_emails(self, agent):
         """Agent searches emails (admin)."""
@@ -2363,315 +2315,242 @@ jobs:
 
     def test_360_delete_milestone(self, agent):
         """Agent deletes a milestone."""
-        if self.milestone_id:
-            agent.call("delete_milestone",
-                owner=self.owner, repo=self.repo_name,
-                milestone_id=self.milestone_id,
-            )
+        agent.call("delete_milestone",
+            owner=self.owner, repo=self.repo_name,
+            milestone_id=self.milestone_id,
+        )
+        assert agent.call("list_milestones",
+            owner=self.owner, repo=self.repo_name, state="all",
+        ) == []
 
     def test_361_delete_repo_label(self, agent):
         """Agent deletes a repo label."""
-        if self.label_id:
-            agent.call("delete_repo_label",
-                owner=self.owner, repo=self.repo_name,
-                label_id=self.label_id,
-            )
+        agent.call("delete_repo_label",
+            owner=self.owner, repo=self.repo_name,
+            label_id=self.label_id,
+        )
+        assert agent.call("list_repo_labels",
+            owner=self.owner, repo=self.repo_name,
+        ) == []
 
-    # ── 50. Packages (may not be available) ───────────────────
+    # ── 50. Packages ──────────────────────────────────────────
 
     def test_370_packages(self, agent):
-        """Agent lists packages (may be empty)."""
-        try:
-            result = agent.call("list_packages", owner=self.owner)
-            assert isinstance(result, list)
-        except Exception:
-            pass
-        # get/delete/list_files/list_versions need actual packages
-        try:
+        """Agent reads and deletes a package.
+
+        The upload API lives outside /api/v1 and has no MCP op, so the package
+        is published over raw HTTP first (see conftest)."""
+        upload_generic_package("agent-pkg", "1.0.0", "hello.txt", b"hello")
+
+        packages = agent.call("list_packages", owner=self.owner)
+        assert [p["name"] for p in packages] == ["agent-pkg"]
+
+        pkg = agent.call("get_package",
+            owner=self.owner, type="generic", name="agent-pkg", version="1.0.0",
+        )
+        assert pkg["version"] == "1.0.0"
+
+        files = agent.call("list_package_files",
+            owner=self.owner, type="generic", name="agent-pkg", version="1.0.0",
+        )
+        assert [f["name"] for f in files] == ["hello.txt"]
+
+        versions = agent.call("list_package_versions",
+            owner=self.owner, type="generic", name="agent-pkg",
+        )
+        assert [v["version"] for v in versions] == ["1.0.0"]
+
+        agent.call("delete_package",
+            owner=self.owner, type="generic", name="agent-pkg", version="1.0.0",
+        )
+        with gitea_error(404, "package does not exist"):
             agent.call("get_package",
-                owner=self.owner, type="generic", name="nonexistent", version="0.0.1",
+                owner=self.owner, type="generic", name="agent-pkg", version="1.0.0",
             )
-        except Exception:
-            pass
-        try:
-            agent.call("delete_package",
-                owner=self.owner, type="generic", name="nonexistent", version="0.0.1",
-            )
-        except Exception:
-            pass
-        try:
-            agent.call("list_package_files",
-                owner=self.owner, type="generic", name="nonexistent", version="0.0.1",
-            )
-        except Exception:
-            pass
-        try:
-            agent.call("list_package_versions",
-                owner=self.owner, type="generic", name="nonexistent",
-            )
-        except Exception:
-            pass
 
     # ── 51. Workflows/CI extended ─────────────────────────────
 
     def test_380_workflow_ops(self, agent):
-        """Agent tests workflow get/run/job ops."""
-        try:
-            result = agent.call("get_workflow",
-                owner=self.owner, repo=self.repo_name,
-                workflow_id="test.yml",
-            )
-            assert result is not None
-        except Exception:
-            pass
+        """Agent reads the workflow, the run dispatched in test_113, and its job."""
+        workflow = agent.call("get_workflow",
+            owner=self.owner, repo=self.repo_name,
+            workflow_id="test.yml",
+        )
+        assert workflow["path"] == ".gitea/workflows/test.yml"
+        assert workflow["state"] == "active"
 
-        # These need actual runs/jobs, call with invalid IDs to test paths
-        try:
-            agent.call("get_workflow_run",
-                owner=self.owner, repo=self.repo_name,
-                run_id=1,
-            )
-        except Exception:
-            pass
-        try:
-            agent.call("list_workflow_run_jobs",
-                owner=self.owner, repo=self.repo_name,
-                run_id=1,
-            )
-        except Exception:
-            pass
-        try:
-            agent.call("get_workflow_job",
-                owner=self.owner, repo=self.repo_name,
-                job_id=1,
-            )
-        except Exception:
-            pass
-        try:
+        run_id = TestAgentWorkflow.workflow_run_id
+        run = agent.call("get_workflow_run",
+            owner=self.owner, repo=self.repo_name, run_id=run_id,
+        )
+        assert run["id"] == run_id
+
+        jobs = agent.call("list_workflow_run_jobs",
+            owner=self.owner, repo=self.repo_name, run_id=run_id,
+        )
+        assert [j["name"] for j in jobs] == ["test"]
+        job_id = jobs[0]["id"]
+
+        job = agent.call("get_workflow_job",
+            owner=self.owner, repo=self.repo_name, job_id=job_id,
+        )
+        assert job["id"] == job_id
+        assert job["run_id"] == run_id
+
+        # Logs only exist once a runner picks the job up; none is registered.
+        with gitea_error(404, "job not started"):
             agent.call("get_workflow_job_logs",
-                owner=self.owner, repo=self.repo_name,
-                job_id=1,
+                owner=self.owner, repo=self.repo_name, job_id=job_id,
             )
-        except Exception:
-            pass
 
     # ── 52. Runners ───────────────────────────────────────────
 
+    # No act_runner is registered in the test instance, so every scope lists
+    # zero runners and get/delete of a runner id can only answer 404.
+
     def test_390_repo_runners(self, agent):
         """Agent lists repo runners and creates registration token."""
-        try:
-            result = agent.call("list_repo_runners",
-                owner=self.owner, repo=self.repo_name,
-            )
-            assert isinstance(result, list)
-        except Exception:
-            pass
+        result = agent.call("list_repo_runners",
+            owner=self.owner, repo=self.repo_name,
+        )
+        assert result == {"runners": [], "total_count": 0}
 
-        try:
-            token = agent.call("create_repo_runner_token",
-                owner=self.owner, repo=self.repo_name,
-            )
-            assert token is not None
-        except Exception:
-            pass
+        token = agent.call("create_repo_runner_token",
+            owner=self.owner, repo=self.repo_name,
+        )
+        assert token["token"]
 
-        # get/delete need actual runner IDs
-        try:
+        with gitea_error(404, "Runner not found"):
             agent.call("get_repo_runner",
                 owner=self.owner, repo=self.repo_name, runner_id=99999,
             )
-        except Exception:
-            pass
-        try:
+        with gitea_error(404, "Runner not found"):
             agent.call("delete_repo_runner",
                 owner=self.owner, repo=self.repo_name, runner_id=99999,
             )
-        except Exception:
-            pass
 
     def test_391_org_runners(self, agent):
         """Agent lists org runners and creates registration token."""
-        try:
-            result = agent.call("list_org_runners", org=self.org_name)
-            assert isinstance(result, list)
-        except Exception:
-            pass
+        assert agent.call("list_org_runners", org=self.org_name) == {
+            "runners": [], "total_count": 0,
+        }
+        assert agent.call("create_org_runner_token", org=self.org_name)["token"]
 
-        try:
-            token = agent.call("create_org_runner_token", org=self.org_name)
-            assert token is not None
-        except Exception:
-            pass
-
-        try:
+        with gitea_error(404, "Runner not found"):
             agent.call("get_org_runner", org=self.org_name, runner_id=99999)
-        except Exception:
-            pass
-        try:
+        with gitea_error(404, "Runner not found"):
             agent.call("delete_org_runner", org=self.org_name, runner_id=99999)
-        except Exception:
-            pass
 
     def test_392_user_runners(self, agent):
         """Agent lists user runners and creates registration token."""
-        try:
-            result = agent.call("list_user_runners")
-            assert isinstance(result, list)
-        except Exception:
-            pass
+        assert agent.call("list_user_runners") == {"runners": [], "total_count": 0}
+        assert agent.call("create_user_runner_token")["token"]
 
-        try:
-            token = agent.call("create_user_runner_token")
-            assert token is not None
-        except Exception:
-            pass
-
-        try:
+        with gitea_error(404, "Runner not found"):
             agent.call("get_user_runner", runner_id=99999)
-        except Exception:
-            pass
-        try:
+        with gitea_error(404, "Runner not found"):
             agent.call("delete_user_runner", runner_id=99999)
-        except Exception:
-            pass
 
     def test_393_admin_runners(self, agent):
         """Agent lists admin runners and creates registration token."""
-        try:
-            result = agent.call("list_admin_runners")
-            assert isinstance(result, list)
-        except Exception:
-            pass
+        assert agent.call("list_admin_runners") == {"runners": [], "total_count": 0}
+        assert agent.call("create_admin_runner_token")["token"]
 
-        try:
-            token = agent.call("create_admin_runner_token")
-            assert token is not None
-        except Exception:
-            pass
-
-        try:
+        with gitea_error(404, "Runner not found"):
             agent.call("get_admin_runner", runner_id=99999)
-        except Exception:
-            pass
-        try:
+        with gitea_error(404, "Runner not found"):
             agent.call("delete_admin_runner", runner_id=99999)
-        except Exception:
-            pass
 
     # ── 53. Org member removal (before cleanup) ───────────────
 
     def test_394_remove_org_member(self, agent):
         """Agent removes an org member."""
-        try:
-            # Add testuser2 to org first, then remove
-            agent.call("add_team_member",
-                team_id=self.team_id,
-                username="testuser2",
-            )
-            agent.call("remove_org_member",
-                org=self.org_name,
-                username="testuser2",
-            )
-        except Exception:
-            pass
+        # Team membership is what makes testuser2 an org member.
+        agent.call("add_team_member",
+            team_id=self.team_id,
+            username="testuser2",
+        )
+        assert "testuser2" in [
+            m["login"] for m in agent.call("list_org_members", org=self.org_name)
+        ]
+        agent.call("remove_org_member",
+            org=self.org_name,
+            username="testuser2",
+        )
+        assert "testuser2" not in [
+            m["login"] for m in agent.call("list_org_members", org=self.org_name)
+        ]
 
     # ── 54. Template repo (create from template) ──────────────
 
     def test_395_create_repo_from_template(self, agent):
         """Agent creates a repo from a template."""
-        # First make the repo a template (need to set it via edit_repo)
-        try:
-            agent.call("edit_repo",
-                owner=self.owner, repo=self.repo_name,
-                template=True,
-            )
-            result = agent.call("create_repo_from_template",
-                template_owner=self.owner,
-                template_repo=self.repo_name,
-                name="from-template-repo",
-                owner=self.owner,
-                description="Created from template",
-            )
-            assert result["name"] == "from-template-repo"
-            # Cleanup
-            agent.call("delete_repo", owner=self.owner, repo="from-template-repo")
-        except Exception:
-            pass
-        # Restore non-template
-        try:
-            agent.call("edit_repo",
-                owner=self.owner, repo=self.repo_name,
-                template=False,
-            )
-        except Exception:
-            pass
+        assert agent.call("edit_repo",
+            owner=self.owner, repo=self.repo_name,
+            template=True,
+        )["template"] is True
+
+        # Gitea 422s with "must select at least one template item" unless at
+        # least one of git_content/topics/labels is requested.
+        result = agent.call("create_repo_from_template",
+            template_owner=self.owner,
+            template_repo=self.repo_name,
+            name="from-template-repo",
+            owner=self.owner,
+            description="Created from template",
+            git_content=True,
+        )
+        assert result["name"] == "from-template-repo"
+        agent.call("delete_repo", owner=self.owner, repo="from-template-repo")
+
+        assert agent.call("edit_repo",
+            owner=self.owner, repo=self.repo_name,
+            template=False,
+        )["template"] is False
 
     # ── 55. Transfer repo ─────────────────────────────────────
 
     def test_396_transfer_repo(self, agent):
         """Agent transfers a repo."""
-        # Create a temp repo to transfer
-        try:
-            agent.call("create_repo",
-                name="repo-to-transfer",
-                description="Will be transferred",
-                auto_init=True,
-            )
-            agent.call("transfer_repo",
-                owner=self.owner,
-                repo="repo-to-transfer",
-                new_owner=self.org_name,
-            )
-            time.sleep(1)
-            # Cleanup
-            agent.call("delete_repo", owner=self.org_name, repo="repo-to-transfer")
-        except Exception:
-            # Cleanup attempt
-            try:
-                agent.call("delete_repo", owner=self.owner, repo="repo-to-transfer")
-            except Exception:
-                pass
+        agent.call("create_repo",
+            name="repo-to-transfer",
+            description="Will be transferred",
+            auto_init=True,
+        )
+        transferred = agent.call("transfer_repo",
+            owner=self.owner,
+            repo="repo-to-transfer",
+            new_owner=self.org_name,
+        )
+        assert transferred["owner"]["login"] == self.org_name
+        agent.call("delete_repo", owner=self.org_name, repo="repo-to-transfer")
 
     # ── 56. Org repo cleanup ──────────────────────────────────
 
     def test_397_cleanup_org_repo(self, agent):
         """Clean up org-test-repo."""
-        try:
-            agent.call("delete_repo", owner=self.org_name, repo="org-test-repo")
-        except Exception:
-            pass
+        agent.call("delete_repo", owner=self.org_name, repo="org-test-repo")
 
     # ── 30. Cleanup ──────────────────────────────────────────
 
     def test_900_cleanup_org(self, agent):
         """Agent cleans up the organization."""
-        if self.team_id:
-            try:
-                agent.call("delete_team", team_id=self.team_id)
-            except Exception:
-                pass
-        if self.org_name:
-            try:
-                agent.call("delete_org", org=self.org_name)
-            except Exception:
-                pass
+        agent.call("delete_team", team_id=self.team_id)
+        agent.call("delete_org", org=self.org_name)
+        with gitea_error(404, "does not exist"):
+            agent.call("get_org", org=self.org_name)
 
     def test_901_cleanup_user(self, agent):
         """Agent cleans up the test user."""
-        try:
-            agent.call("admin_delete_user", username="testuser2", purge=True)
-        except Exception:
-            pass
+        agent.call("admin_delete_user", username="testuser2", purge=True)
+        with gitea_error(404, "does not exist"):
+            agent.call("get_user", username="testuser2")
 
     def test_999_delete_repo(self, agent):
         """Agent deletes the test repo."""
         agent.call("delete_repo", owner=self.owner, repo=self.repo_name)
-        # Verify deletion
-        try:
+        with gitea_error(404, "not found"):
             agent.call("get_repo", owner=self.owner, repo=self.repo_name)
-            assert False, "Repo should have been deleted"
-        except Exception:
-            pass  # Expected — repo doesn't exist
 
     def test_final_print_log(self, agent):
         """Print the full agent call log."""

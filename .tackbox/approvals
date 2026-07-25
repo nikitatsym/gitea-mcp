@@ -1,0 +1,21 @@
+scripts/bootstrap.py#existing_token_works: no-report: an unusable cached token just means the caller mints a fresh one
+scripts/bootstrap.py#main: no-report: top-level CLI failure report - stderr message plus exit code 1
+scripts/bootstrap.py#wait_for_ready: no-report: container not up yet is expected; last error goes into the TimeoutError
+src/gitea_mcp/client.py#GiteaClient._request: no-report: parse fallback for a non-JSON error body; the HTTP error raises below
+src/gitea_mcp/tools.py#_basic_auth_request: no-report: parse fallback for a non-JSON error body; the HTTP error raises below
+src/gitea_mcp/tools.py#_cancel_handle: no-report: recorded on the handle so the snapshot names the real failure
+src/gitea_mcp/tools.py#_cancel_handle: no-report: the expected outcome of the cancel we just issued
+src/gitea_mcp/tools.py#_emit_log: no-report: MCP log notification is decoration, logged at debug; must not abort the wait
+src/gitea_mcp/tools.py#_emit_progress: no-report: MCP progress is decoration, logged at debug; must not abort the wait
+src/gitea_mcp/tools.py#_enrich_job_final: no-report: the error is returned as the log content of the final snapshot
+src/gitea_mcp/tools.py#_fetch_failed_job_logs: no-report: the error is returned as this job's log content
+src/gitea_mcp/tools.py#_wait_loop: no-report: budgeted transient retry; record_poll_failure puts it in the snapshot
+src/gitea_mcp/tools.py#_wait_loop: no-report: our own cancel path, re-raised below after recording it
+src/gitea_mcp/tools.py#_wait_loop: no-report: recorded in the snapshot as enrichment_error
+src/gitea_mcp/tools.py#_wait_start_snapshot: no-report: recorded in the snapshot as enrichment_error
+src/gitea_mcp/tools.py#_wait_start_snapshot: no-report: reported to the caller in snapshot["error"] instead of raising
+src/gitea_mcp/tools.py#workflow_jobs_wait: no-report: budgeted transient retry; fatal or budget-exhausted re-raises below
+src/gitea_mcp/tools.py#workflow_jobs_wait: no-report: the error is returned as the log content of a finished wait
+src/gitea_mcp/tools.py#workflow_runs_wait: no-report: budgeted transient retry; fatal or budget-exhausted re-raises below
+src/gitea_mcp/tools.py#workflow_runs_wait: no-report: returned to the caller as enrichment_error on a finished wait
+tests/test_wait_async.py#_cleanup: no-report: the expected outcome of the cancel this helper issues

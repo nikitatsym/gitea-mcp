@@ -8,6 +8,7 @@ have something to lean on.
 
 from __future__ import annotations
 
+import json
 
 from gitea_mcp.prepare import _body
 from gitea_mcp.registry import _UNSET, _Unset
@@ -116,6 +117,5 @@ class TestUnsetThroughParamsModel:
         # milestone is optional → not in `required`
         assert "milestone" not in schema.get("required", [])
         # And — critically — no PydanticUndefined sentinel anywhere.
-        import json
         dumped = json.dumps(schema, default=str)
         assert "PydanticUndefined" not in dumped
