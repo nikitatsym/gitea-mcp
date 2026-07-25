@@ -421,7 +421,7 @@ jobs:
         assert len(times) >= 1
 
     def test_60_issue_dependencies(self, agent):
-        """Agent creates a second issue and sets dependency."""
+        """Agent creates a second issue, sets and clears a dependency."""
         # Create a second issue
         result = agent.call("create_issue",
             owner=self.owner,
@@ -431,16 +431,29 @@ jobs:
         )
         TestAgentWorkflow.second_issue_index = result["number"]
 
-        # Try adding dependency (may not work on all Gitea versions)
-        try:
-            agent.call("add_issue_dependency",
-                owner=self.owner,
-                repo=self.repo_name,
-                index=self.issue_index,
-                depends_on_id=self.second_issue_index,
-            )
-        except Exception:
-            pass  # Some Gitea versions handle this differently
+        agent.call("add_issue_dependency",
+            owner=self.owner,
+            repo=self.repo_name,
+            index=self.issue_index,
+            depends_on_id=self.second_issue_index,
+        )
+        deps = agent.call("list_issue_dependencies",
+            owner=self.owner, repo=self.repo_name, index=self.issue_index,
+        )
+        assert [d["number"] for d in deps] == [self.second_issue_index]
+
+        # Remove it again: an open dependency would block closing the issue
+        # later in the workflow (Gitea returns 412 on close).
+        agent.call("remove_issue_dependency",
+            owner=self.owner,
+            repo=self.repo_name,
+            index=self.issue_index,
+            depends_on_id=self.second_issue_index,
+        )
+        deps = agent.call("list_issue_dependencies",
+            owner=self.owner, repo=self.repo_name, index=self.issue_index,
+        )
+        assert deps == []
 
     def test_61_pin_lock_issue(self, agent):
         """Agent pins and locks an issue."""
@@ -1479,23 +1492,12 @@ jobs:
         )
 
     def test_216_list_issue_dependencies(self, agent):
-        """Agent lists issue dependencies."""
+        """Agent lists issue dependencies (cleared in test_60)."""
         result = agent.call("list_issue_dependencies",
             owner=self.owner, repo=self.repo_name,
             index=self.issue_index,
         )
-        assert isinstance(result, list)
-
-    def test_217_remove_issue_dependency(self, agent):
-        """Agent removes an issue dependency."""
-        try:
-            agent.call("remove_issue_dependency",
-                owner=self.owner, repo=self.repo_name,
-                index=self.issue_index,
-                depends_on_id=self.second_issue_index,
-            )
-        except Exception:
-            pass  # May fail if dependency wasn't created
+        assert result == []
 
     def test_218_issue_subscriptions(self, agent):
         """Agent manages issue subscriptions."""
