@@ -1,8 +1,8 @@
 services:
   gitea:
-    # Pinned (1.25.4): error-message texts the pinned-error tests assert drift
+    # Pinned (1.26.4): error-message texts the pinned-error tests assert drift
     # across Gitea versions; bump the digest and those assertions together.
-    image: gitea/gitea@sha256:17d18218be2dad1f8ed402a4f906989505c90ab8b66ee9befcecfb5d470133e7
+    image: gitea/gitea@sha256:8e25c717b8f748445e15ec46e0390f577cb628101184cb0a150d1dae126c1f39
     environment:
       - GITEA__security__INSTALL_LOCK=true
       - GITEA__server__ROOT_URL=http://localhost:3000
@@ -10,7 +10,7 @@ services:
       - GITEA__actions__ENABLED=true
       - GITEA__actions__DEFAULT_ACTIONS_URL=https://github.com
       - GITEA__api__ENABLE_SWAGGER=true
-      # Registers /api/v1/nodeinfo, which the GetNodeinfo op needs.
+      # Registers /api/v1/nodeinfo; since 1.26 its handler is a 501 stub.
       - GITEA__federation__ENABLED=true
       - GITEA__service__DISABLE_REGISTRATION=false
       - GITEA__service__REQUIRE_SIGNIN_VIEW=false
