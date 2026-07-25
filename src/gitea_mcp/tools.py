@@ -1553,7 +1553,14 @@ def add_issue_dependency(
     ))],
 ):
     """Add a dependency to an issue. depends_on_id is the index of the dependency issue."""
-    return _call("POST", "/repos/{owner}/{repo}/issues/{index}/dependencies", locals(), rename={"depends_on_id": "id"})
+    # Body is Gitea's IssueMeta {index, owner, repo}; owner/repo must match the
+    # URL repo or Gitea resolves the body pair as a cross-repo dependency.
+    return _ok(
+        _get_client().post(
+            f"/repos/{owner}/{repo}/issues/{index}/dependencies",
+            json={"index": depends_on_id, "owner": owner, "repo": repo},
+        )
+    )
 
 @_op(gitea_delete)
 def remove_issue_dependency(
@@ -1571,7 +1578,7 @@ def remove_issue_dependency(
         _get_client()._json(
             "DELETE",
             f"/repos/{owner}/{repo}/issues/{index}/dependencies",
-            json={"id": depends_on_id},
+            json={"index": depends_on_id, "owner": owner, "repo": repo},
         )
     )
 
