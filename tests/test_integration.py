@@ -11,12 +11,12 @@ The test simulates a realistic agent workflow:
 from contextlib import contextmanager
 
 import pytest
-
 from conftest import (
     upload_generic_package,
     wait_for_pr_mergeable,
     wait_for_workflow_run,
 )
+
 from gitea_mcp.client import GiteaError
 
 pytestmark = pytest.mark.integration
@@ -461,10 +461,10 @@ jobs:
         )
         TestAgentWorkflow.second_issue_index = result["number"]
 
-        dep = dict(
-            owner=self.owner, repo=self.repo_name,
-            index=self.issue_index, depends_on_id=self.second_issue_index,
-        )
+        dep = {
+            "owner": self.owner, "repo": self.repo_name,
+            "index": self.issue_index, "depends_on_id": self.second_issue_index,
+        }
 
         def listed():
             return agent.call("list_issue_dependencies",
@@ -2557,7 +2557,7 @@ jobs:
         print(f"\n{'='*60}")
         print(f"Agent made {len(agent.call_log)} MCP tool calls total")
         print(f"{'='*60}")
-        tools_used = set(e["tool"] for e in agent.call_log)
+        tools_used = {e["tool"] for e in agent.call_log}
         print(f"Unique tools used: {len(tools_used)}")
         for tool in sorted(tools_used):
             count = sum(1 for e in agent.call_log if e["tool"] == tool)

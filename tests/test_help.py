@@ -6,7 +6,7 @@ renderer without relying on the full tools.py registration.
 
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated
 
 import pytest
 from pydantic import Field
@@ -48,7 +48,7 @@ def create_issue(
     owner: str,
     repo: str,
     title: str,
-    body: Annotated[Optional[str], Field(description="Issue body markdown.")] = None,
+    body: Annotated[str | None, Field(description="Issue body markdown.")] = None,
 ):
     """Create an issue in a repository.
 
@@ -156,7 +156,7 @@ class TestHelpUnsetRendering:
         """`= None` is a real default the API treats differently from omission
         in some places — keep rendering it as `param?: T` (no `=None` either,
         per existing convention)."""
-        def fn_with_none(owner: str, milestone: int = None):
+        def fn_with_none(owner: str, milestone: int = None):  # noqa: RUF013 - the sloppy shape is the test subject
             """Op with None default."""
 
         _seed({"gitea_write": {"FnWithNone": fn_with_none}})

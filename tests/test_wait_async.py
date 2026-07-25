@@ -13,10 +13,6 @@ import asyncio
 import json
 
 import pytest
-
-import gitea_mcp.tools as tools_mod
-from gitea_mcp import server
-from gitea_mcp.wait_registry import WAIT_REGISTRY
 from waiter_fixtures import (
     RUN_JOBS_PATH,
     RUN_PATH,
@@ -27,6 +23,10 @@ from waiter_fixtures import (
     seed_run_script,
     tools_state,
 )
+
+import gitea_mcp.tools as tools_mod
+from gitea_mcp import server
+from gitea_mcp.wait_registry import WAIT_REGISTRY
 
 
 @pytest.fixture(autouse=True)

@@ -6,9 +6,8 @@ fixtures live in `test_integration.py`; these run with no docker, no env.
 
 from __future__ import annotations
 
-from typing import Optional
-
 import pytest
+from pydantic import ValidationError
 
 from gitea_mcp.server import _build_params_model
 
@@ -67,7 +66,7 @@ class TestStringBoolCoercion:
     def test_optional_bool_coerced(self):
         """Optional[bool] (i.e. `bool | None`) is still picked up — the
         validator walks the Union args."""
-        def fn(private: Optional[bool] = None):
+        def fn(private: bool | None = None):
             """Test."""
             return private
 
@@ -88,7 +87,7 @@ class TestStringBoolCoercion:
             return private
 
         model = self._model(fn)
-        with pytest.raises(Exception):  # noqa: BLE001 — ValidationError
+        with pytest.raises(ValidationError):
             model.model_validate({"private": "maybe"})
 
 
@@ -101,5 +100,5 @@ class TestExtraForbid:
             return a
 
         model = _build_params_model(fn)
-        with pytest.raises(Exception):  # noqa: BLE001 — ValidationError
+        with pytest.raises(ValidationError):
             model.model_validate({"a": 1, "z": 99})
