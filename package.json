@@ -8,7 +8,7 @@
     "gitea:down": "docker compose -f tests/docker-compose.yml down -v",
     "gitea:logs": "docker compose -f tests/docker-compose.yml logs -f gitea",
     "gitea:status": "docker compose -f tests/docker-compose.yml ps",
-    "lint": "uvx tackbox@latest lint .",
+    "lint": "./dev.py lint",
     "test": "uv run pytest -m 'not integration'",
     "test:integration": "uv run pytest -m integration tests/test_integration.py",
     "test:integration:full": "npm run gitea:up && npm run test:integration; rv=$?; npm run gitea:down; exit $rv"
