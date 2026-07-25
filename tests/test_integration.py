@@ -1398,10 +1398,12 @@ jobs:
             agent.call_raw("get_signing_key")
 
     def test_197_get_nodeinfo(self, agent):
-        """Agent gets nodeinfo (route needs GITEA__federation__ENABLED)."""
-        result = agent.call("get_nodeinfo")
-        assert result["software"]["name"] == "gitea"
-        assert result["protocols"] == ["activitypub"]
+        """Agent gets nodeinfo (route needs GITEA__federation__ENABLED).
+
+        1.26 gutted federation: the route now maps to activitypub.NotImplemented,
+        so the only contract left to pin is its 501."""
+        with gitea_error(501, "Not implemented"):
+            agent.call("get_nodeinfo")
 
     def test_198_list_repo_reviewers(self, agent):
         """Agent lists repo reviewers."""
