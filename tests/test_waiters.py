@@ -40,7 +40,7 @@ def _reset_state(monkeypatch):
 
 
 class FakeContext:
-    """Minimal stand-in for mcp.server.fastmcp.Context."""
+    """Minimal stand-in for mcp.server.mcpserver.Context."""
 
     def __init__(self):
         self.progress: list[dict] = []

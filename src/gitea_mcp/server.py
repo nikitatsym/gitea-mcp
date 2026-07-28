@@ -8,7 +8,7 @@ import types
 import typing
 from typing import Any
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -23,7 +23,7 @@ from . import tools as _tools_module
 from .registry import _UNSET, ROOT, _Unset
 from .wait_registry import WAIT_REGISTRY as _WAIT_REGISTRY
 
-mcp = FastMCP("gitea")
+mcp = MCPServer("gitea")
 
 # Functions may declare a `ctx` parameter to receive the live MCP Context
 # (progress / log notifications). It is injected by `_coerce_call`, never
@@ -352,7 +352,7 @@ def _register_tools():
             # Async by design so tools that need the MCP Context (progress /
             # log) can `await ctx.report_progress(...)` inside their dispatch
             # path. Sync ops still work — we only await actual coroutines.
-            # `ctx` is typed `Context` so FastMCP injects the live request
+            # `ctx` is typed `Context` so MCPServer injects the live request
             # context; it never appears in the tool's JSON schema.
             async def tool_fn(
                 operation: str,
