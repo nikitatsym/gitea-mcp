@@ -10,6 +10,7 @@ with `npm run gitea:down`.
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
@@ -65,12 +66,31 @@ def test() -> int:
     )
 
 
+def install_hook() -> int:
+    """Install the pre-commit hook. Idempotent."""
+    if (_ROOT / ".pre-commit-config.yaml").exists():
+        return _run(["uv", "run", "pre-commit", "install"])
+    print("no tracked hook: expected .pre-commit-config.yaml", file=sys.stderr)
+    return 1
+
+
+def _hook_ready() -> bool:
+    return (_ROOT / ".git" / "hooks" / "pre-commit").exists()
+
+
+def _hook_hint() -> None:
+    # A fresh clone gates nothing until asked; CI has no use for a hook.
+    if not os.environ.get("CI") and not _hook_ready():
+        print("hint: `python dev.py hook` installs the pre-commit gate", file=sys.stderr)
+
+
 def check() -> int:
+    _hook_hint()
     # Run both so one failing gate never hides the other; aggregate non-zero.
     return _aggregate([lint(), test()])
 
 
-_COMMANDS = {"lint": lint, "test": test, "e2e": e2e, "check": check}
+_COMMANDS = {"lint": lint, "test": test, "e2e": e2e, "check": check, "hook": install_hook}
 
 
 def main(argv: list[str] | None = None) -> int:
