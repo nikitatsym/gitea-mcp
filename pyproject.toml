@@ -25,9 +25,14 @@ Repository = "https://github.com/nikitatsym/gitea-mcp"
 
 [dependency-groups]
 dev = [
+    "mypy>=1.11",
     "pytest>=9.0.2",
     "ruff==0.16.0",
 ]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/gitea_mcp"]
 
 [tool.pytest.ini_options]
 markers = [

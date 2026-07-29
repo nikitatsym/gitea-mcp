@@ -40,6 +40,31 @@ def _to_pascal(name: str) -> str:
     return "".join(w.capitalize() for w in name.split("_"))
 
 
+class _BoolCoercingBase(BaseModel):
+    """Base for generated per-op models: loose str->bool coercion.
+
+    The validator lives on a real class so `@classmethod` binds to a method;
+    defined inside the factory it is a plain nested function and mypy says so.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _coerce_string_bool(cls, v: Any, info: Any) -> Any:
+        if not isinstance(v, str):
+            return v
+        ann = cls.model_fields[info.field_name].annotation
+        if bool not in (ann,) + typing.get_args(ann):
+            return v
+        lower = v.lower()
+        if lower in ("true", "1", "yes"):
+            return True
+        if lower in ("false", "0", "no"):
+            return False
+        return v
+
+
 def _build_params_model(fn) -> type[BaseModel]:
     """Build a Pydantic model from a function's signature.
 
@@ -69,26 +94,9 @@ def _build_params_model(fn) -> type[BaseModel]:
         else:
             fields[name] = (ann, param.default)
 
-    @field_validator("*", mode="before")
-    @classmethod
-    def _coerce_string_bool(cls, v, info):
-        if not isinstance(v, str):
-            return v
-        ann = cls.model_fields[info.field_name].annotation
-        types_in_ann = (ann,) + typing.get_args(ann)
-        if bool not in types_in_ann:
-            return v
-        lower = v.lower()
-        if lower in ("true", "1", "yes"):
-            return True
-        if lower in ("false", "0", "no"):
-            return False
-        return v
-
     return create_model(
         f"{_to_pascal(fn.__name__)}Params",
-        __config__=ConfigDict(extra="forbid"),
-        __validators__={"_coerce_string_bool": _coerce_string_bool},
+        __base__=_BoolCoercingBase,
         **fields,
     )
 

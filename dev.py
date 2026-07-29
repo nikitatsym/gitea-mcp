@@ -36,6 +36,7 @@ def lint() -> int:
     return _aggregate(
         [
             _run(["uv", "run", "ruff", "check", "."]),
+            _run(["uv", "run", "mypy"]),
             _run(["uvx", "tackbox@latest", "lint", "."]),
         ]
     )

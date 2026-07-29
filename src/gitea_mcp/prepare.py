@@ -17,9 +17,14 @@ Payload assembly policy (see `_body`):
 
 import os
 import re
+from typing import Literal
 
 from .config import allow_public
 from .registry import _UNSET
+
+# Callers annotate the parameter with the same literal set, so returning a bare
+# `str` here would widen it back out at every assignment site.
+Visibility = Literal["public", "limited", "private"] | None
 
 _BRIEF_MAX = int(os.environ.get("MCP_GITEA_BRIEF_MAX", "100"))
 
@@ -60,7 +65,7 @@ def _enforce_private(private: bool | None) -> bool | None:
     return private
 
 
-def _enforce_visibility(visibility: str | None) -> str | None:
+def _enforce_visibility(visibility: Visibility) -> Visibility:
     """Block non-private orgs unless --allow-public was passed."""
     if not allow_public() and visibility != "private":
         raise ValueError(
