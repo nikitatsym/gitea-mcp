@@ -94,7 +94,8 @@ Params are validated strictly via Pydantic: unknown keys, wrong types, and missi
 (ruff + tackbox), `e2e` (boots the dockerized Gitea, runs the integration
 suite), `test` (unit + e2e), `check` (lint + test). Pre-commit and CI both
 run `./dev.py check` — install the hook once per clone with
-`pre-commit install`.
+`python dev.py hook`, which points `core.hooksPath` at the tracked
+`.githooks/`.
 
 npm scripts cover the docker lifecycle around it:
 
