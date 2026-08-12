@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json as _json
+import re
 import types
 import typing
 from typing import Any
@@ -331,6 +332,31 @@ def _dispatch(operation: str, group_name: str, params: dict, ctx: Context | None
     return _coerce_call(ops[operation], params, operation, ctx)
 
 
+# ── Doc-example drift guard ──────────────────────────────────────────────────
+
+# Answered by the meta-tool before the op lookup, so they are never registered ops.
+_META_OPERATIONS = frozenset({"help", "schema"})
+
+_EXAMPLE_OPERATION = re.compile(r"""operation=["'](\w+)["']""")
+
+
+def _validate_doc_examples(group_name: str, doc: str, ops: dict[str, Any]) -> None:
+    """Reject a group doc whose example names an operation the group does not expose.
+
+    Examples are hand-written while operation names are derived from the tool
+    function names, so only this check keeps the two from drifting apart.
+    """
+    unknown = sorted(
+        name
+        for name in _EXAMPLE_OPERATION.findall(doc)
+        if name not in _META_OPERATIONS and name not in ops
+    )
+    if unknown:
+        raise RuntimeError(
+            f"{group_name} doc example references unknown operations: {unknown}"
+        )
+
+
 # ── Registration ─────────────────────────────────────────────────────────────
 
 
@@ -353,6 +379,7 @@ def _register_tools():
     for group_name, (group, fns) in groups.items():
         ops = {_to_pascal(n): fn for n, fn in fns.items()}
         _group_ops[group_name] = ops
+        _validate_doc_examples(group_name, group.doc, ops)
         for pascal_name in ops:
             _all_grouped[pascal_name] = group_name
 
