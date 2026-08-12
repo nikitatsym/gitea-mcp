@@ -20,7 +20,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.0.0
+        with:
+          version: "latest-known"
       - name: Install
         run: uv sync
       - name: Check (lint + unit + e2e, same entry point as pre-commit)
@@ -38,7 +40,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.0.0
+        with:
+          version: "latest-known"
 
       - name: Calculate version
         id: version
