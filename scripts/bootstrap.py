@@ -106,7 +106,7 @@ def existing_token_works(url: str) -> str | None:
     if not ENV_FILE.exists():
         return None
     token: str | None = None
-    for line in ENV_FILE.read_text().splitlines():
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line.startswith("GITEA_TOKEN="):
             token = line.split("=", 1)[1].strip()
@@ -170,11 +170,12 @@ def create_token(url: str, name: str) -> str:
 def write_env_file(url: str, token: str) -> None:
     ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
     ENV_FILE.write_text(
-        f"# Written by scripts/bootstrap.py — consumed by tests and local shells\n"
+        f"# Written by scripts/bootstrap.py - consumed by tests and local shells\n"
         f"GITEA_URL={url}\n"
         f"GITEA_TOKEN={token}\n"
         f"GITEA_ADMIN_USER={ADMIN_USER}\n"
-        f"GITEA_ADMIN_PASSWORD={ADMIN_PASS}\n"
+        f"GITEA_ADMIN_PASSWORD={ADMIN_PASS}\n",
+        encoding="utf-8",
     )
     print(f"[bootstrap] wrote {ENV_FILE}")
 
