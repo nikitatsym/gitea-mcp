@@ -68,15 +68,24 @@ def test() -> int:
 
 
 def install_hook() -> int:
-    """Install the pre-commit hook. Idempotent."""
-    if (_ROOT / ".pre-commit-config.yaml").exists():
-        return _run(["uv", "run", "pre-commit", "install"])
-    print("no tracked hook: expected .pre-commit-config.yaml", file=sys.stderr)
+    """Point git at the repo's tracked pre-commit hook. Idempotent."""
+    if (_ROOT / ".githooks" / "pre-commit").exists():
+        return _run(["git", "config", "core.hooksPath", ".githooks"])
+    print("no tracked hook: expected .githooks/pre-commit", file=sys.stderr)
     return 1
 
 
 def _hook_ready() -> bool:
-    return (_ROOT / ".git" / "hooks" / "pre-commit").exists()
+    if (_ROOT / ".git" / "hooks" / "pre-commit").exists():
+        return True
+    configured = subprocess.run(
+        ["git", "config", "--get", "core.hooksPath"],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return bool(configured) and (_ROOT / configured / "pre-commit").exists()
 
 
 def _hook_hint() -> None:
