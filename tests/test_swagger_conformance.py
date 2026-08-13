@@ -16,9 +16,10 @@ import functools
 import inspect
 import re
 import textwrap
+import typing
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any, TypeGuard
+from typing import Any, Literal, TypeGuard
 
 import httpx
 import pytest
@@ -428,6 +429,7 @@ class _Swagger:
     def __init__(self, spec: dict[str, Any]) -> None:
         self._defs: dict[str, Any] = spec.get("definitions") or {}
         self.endpoints: dict[tuple[str, str], tuple[frozenset[str], frozenset[str]]] = {}
+        self.query_enums: dict[tuple[str, str], dict[str, frozenset[str]]] = {}
         self._paths: set[str] = set(spec["paths"])
         self._templates: list[tuple[str, list[list[str | None]]]] = [
             (path, _segments(path)) for path in spec["paths"]
@@ -438,15 +440,22 @@ class _Swagger:
                     continue
                 query: set[str] = set()
                 body: set[str] = set()
+                enums: dict[str, frozenset[str]] = {}
                 for param in operation.get("parameters") or []:
                     where = param.get("in")
                     if where == "query":
                         query.add(param["name"])
+                        # Formal enums only; prose-documented value sets are not
+                        # machine-checkable and are skipped.
+                        values = param.get("enum") or (param.get("items") or {}).get("enum")
+                        if values:
+                            enums[param["name"]] = frozenset(values)
                     elif where == "formData":
                         body.add(param["name"])
                     elif where == "body":
                         body |= self._properties(param.get("schema") or {})
                 self.endpoints[path, method.upper()] = (frozenset(query), frozenset(body))
+                self.query_enums[path, method.upper()] = enums
 
     def _properties(self, schema: dict[str, Any], depth: int = 0) -> set[str]:
         if depth > 8 or not isinstance(schema, dict):
@@ -530,6 +539,88 @@ def test_no_wire_call_ops_are_expected() -> None:
     )
     stale = sorted(NO_WIRE_CALL_OK - set(ops.no_wire_call))
     assert not stale, f"NO_WIRE_CALL_OK entries no longer match reality: {stale}"
+
+
+def _arg_wire_names(fn: Callable[..., Any]) -> dict[str, str]:
+    """Best-effort map from a signature arg to the wire name it is sent under.
+
+    Sources: `rename=` dicts of _call/_body, dict literals `{"key": arg}`, and
+    subscript assigns `params["key"] = arg`. Args sent under their own name need
+    no entry; args whose value is transformed before sending stay unmapped and
+    are simply not enum-checked.
+    """
+    mapping: dict[str, str] = {}
+    for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(fn)))):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Subscript)
+            and isinstance(node.targets[0].slice, ast.Constant)
+            and isinstance(node.value, ast.Name)
+        ):
+            mapping[node.value.id] = node.targets[0].slice.value
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and isinstance(value, ast.Name):
+                    mapping[value.id] = key.value
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ("_call", "_body")
+        ):
+            for kw in node.keywords:
+                if kw.arg == "rename" and isinstance(kw.value, ast.Dict):
+                    for key, value in zip(kw.value.keys, kw.value.values):
+                        if isinstance(key, ast.Constant) and isinstance(value, ast.Constant):
+                            mapping[key.value] = value.value
+    return mapping
+
+
+def _literal_values(annotation: Any) -> frozenset[str]:
+    """String values of every Literal reachable inside the annotation."""
+    values: set[str] = set()
+    stack = [annotation]
+    while stack:
+        ann = stack.pop()
+        if typing.get_origin(ann) is Literal:
+            values |= {a for a in typing.get_args(ann) if isinstance(a, str)}
+        else:
+            stack.extend(typing.get_args(ann))
+    return frozenset(values)
+
+
+def test_query_enum_values_match_swagger(swagger: _Swagger) -> None:
+    """A Literal value the spec's enum lacks is the silent-lie class again:
+    Gitea quietly falls back to its default instead of erroring. Query params
+    only — body enums are rare and not modeled here."""
+    findings: list[str] = []
+    for op, calls in sorted(_extract_ops().analyzed.items()):
+        if op in SPEC_GAPS:
+            continue
+        fn = getattr(tools, op)
+        hints = typing.get_type_hints(fn, include_extras=True, localns=vars(tools))
+        wire_of = _arg_wire_names(fn)
+        for call in calls:
+            matches = swagger.candidates(call.path, call.method)
+            if len(matches) != 1:
+                continue
+            enums = swagger.query_enums.get((matches[0], call.method), {})
+            for arg, annotation in hints.items():
+                values = _literal_values(annotation)
+                wire = wire_of.get(arg, arg)
+                if not values or wire not in call.query:
+                    continue
+                extra = sorted(values - enums[wire]) if wire in enums else []
+                if extra:
+                    findings.append(
+                        f"{op}.{arg} -> {call.method} {call.path} ?{wire}: Literal "
+                        f"values {extra} are not in the spec enum {sorted(enums[wire])}"
+                    )
+    assert not findings, (
+        f"{len(findings)} Literal(s) advertise values the spec enum lacks; Gitea "
+        "silently substitutes its default for these:\n"
+        + "\n".join(f"  {f}" for f in findings)
+    )
 
 
 def test_wire_calls_match_swagger(swagger: _Swagger) -> None:
