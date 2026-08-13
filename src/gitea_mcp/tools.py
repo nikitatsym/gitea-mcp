@@ -1056,7 +1056,7 @@ def list_commits(
     repo: str,
     sha: Annotated[str | None, Field(description="Start ref (branch / tag / commit SHA) to walk from. Defaults to the repo's default branch.")] = None,
     path: Annotated[str | None, Field(description="Only return commits that touched this file or directory path.")] = None,
-    stat: Annotated[bool | None, Field(description="If True, include per-commit additions/deletions stats in the response. Costs extra time on the server.")] = None,
+    stat: Annotated[bool | None, Field(description="Per-commit additions/deletions stats. Gitea includes them by default; pass False to skip computing them for a faster response.")] = None,
     limit: Annotated[int | None, Field(description="Page size (commits per page).")] = 20,
     page: Annotated[int | None, Field(description="1-based page number.")] = None,
     brief: Annotated[bool, Field(description="True (default) = compact view (short sha, first line of message, author, date); False = full commit objects.")] = True,
@@ -1793,7 +1793,7 @@ def list_pull_requests(
     owner: str,
     repo: str,
     state: Annotated[Literal["open", "closed", "all"] | None, Field(description="Filter by PR state. Defaults to server default ('open').")] = None,
-    sort: Annotated[Literal["newest", "oldest", "recentupdate", "leastupdate", "mostcomment", "leastcomment", "priority"] | None, Field(description="Sort order for results.")] = None,
+    sort: Annotated[Literal["oldest", "recentupdate", "recentclose", "leastupdate", "mostcomment", "leastcomment", "priority"] | None, Field(description="Sort order for results. Omitted = server default (newest first). Gitea has no 'newest' value — it silently falls back to the default.")] = None,
     milestone: Annotated[int | None, Field(description="Milestone integer ID from list_milestones (NOT the milestone title).")] = None,
     labels: Annotated[list[int] | None, Field(description=(
         "Label IDs (int64) from list_repo_labels — NOT names. "
@@ -1810,7 +1810,9 @@ def list_pull_requests(
     Set brief=False for full Gitea API response objects."""
     params = _body(locals(), exclude=("owner", "repo", "brief", "labels"))
     if labels is not None:
-        params["labels"] = ",".join(str(label) for label in labels)
+        # collectionFormat=multi: repeated labels= params, each a bare int ID;
+        # a comma-joined value is a 500 (the issues endpoint is the CSV one).
+        params["labels"] = labels
     data = _get_client().paginate(f"/repos/{owner}/{repo}/pulls", params=params or None)
     if brief:
         data = _slim_issues(data)
@@ -2386,7 +2388,7 @@ def delete_org_label(org: str, label_id: int):
 def list_notifications(
     all: Annotated[bool | None, Field(description="True = include already-read notifications. False/omitted (default) = unread only.")] = None,
     status_types: Annotated[list[Literal["unread", "read", "pinned"]] | None, Field(description="Filter by status. Defaults to ['unread', 'pinned'] server-side.")] = None,
-    subject_type: Annotated[list[Literal["Issue", "Pull", "Commit", "Repository"]] | None, Field(description="Filter by notification subject type.")] = None,
+    subject_type: Annotated[list[Literal["issue", "pull", "commit", "repository"]] | None, Field(description="Filter by notification subject type.")] = None,
     brief: Annotated[bool, Field(description="True (default) = compact slim view (id, repo, subject type/title, unread, updated_at); False = full Gitea notification objects.")] = True,
 ):
     """List notifications for the current user.
@@ -2526,7 +2528,7 @@ def delete_wiki_page(owner: str, repo: str, page_name: str):
 # ── Packages ─────────────────────────────────────────────────────────────────
 
 
-_PACKAGE_TYPES = Literal["alpine", "arch", "cargo", "chef", "composer", "conan", "conda", "container", "cran", "debian", "generic", "go", "helm", "maven", "npm", "nuget", "pub", "pypi", "rpm", "rubygems", "swift", "vagrant"]
+_PACKAGE_TYPES = Literal["alpine", "cargo", "chef", "composer", "conan", "conda", "container", "cran", "debian", "generic", "go", "helm", "maven", "npm", "nuget", "pub", "pypi", "rpm", "rubygems", "swift", "terraform", "vagrant"]
 _PackageType = Annotated[_PACKAGE_TYPES, Field(description="Gitea package registry type (the package format).")]
 _PackageTypeFilter = Annotated[_PACKAGE_TYPES | None, Field(description="Filter by Gitea package registry type. Omit to list all package types for the owner.")]
 _PackageName = Annotated[str, Field(description="Package name as registered (format depends on type).")]
@@ -2546,7 +2548,7 @@ def list_packages(
 @_op(gitea_read)
 def get_package(
     owner: str,
-    type: Annotated[Literal["alpine", "arch", "cargo", "chef", "composer", "conan", "conda", "container", "cran", "debian", "generic", "go", "helm", "maven", "npm", "nuget", "pub", "pypi", "rpm", "rubygems", "swift", "vagrant"], Field(description="Gitea package registry type (the package format).")],
+    type: Annotated[_PACKAGE_TYPES, Field(description="Gitea package registry type (the package format).")],
     name: Annotated[str, Field(description="Package name as registered (format depends on type: e.g. 'mypkg' for npm/pypi, 'group:artifact' for maven, 'image' for container).")],
     version: Annotated[str, Field(description="Package version string as registered (e.g. '1.2.3', 'v0.5.0', container tag 'latest').")],
 ):
@@ -2647,6 +2649,7 @@ def admin_run_cron_job(
 def admin_list_repos(
     limit: Annotated[int | None, Field(description="Page size. Defaults to 50.")] = None,
     page: Annotated[int | None, Field(description="1-based page number. When given, only that page is returned; omitted = walk every page.")] = None,
+    private: Annotated[bool | None, Field(description="Include private repos the token can see. Omitted = server default (true, private repos included). False = public repos only. This widens/narrows the listing; it is NOT a private-only filter.")] = None,
 ):
     """List every repository on the instance (admin only).
 
@@ -2656,10 +2659,10 @@ def admin_list_repos(
     result: list = []
     current = page or 1
     while True:
-        data = _get_client().get(
-            "/repos/search",
-            params={"limit": page_size, "page": current, "private": True},
-        )
+        params: dict = {"limit": page_size, "page": current}
+        if private is not None:
+            params["private"] = private
+        data = _get_client().get("/repos/search", params=params)
         batch = data.get("data") or [] if isinstance(data, dict) else data
         result.extend(batch)
         if page is not None or len(batch) < page_size:
