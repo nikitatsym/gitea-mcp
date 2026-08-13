@@ -133,7 +133,7 @@ def _slim_issue(issue: dict) -> dict:
         "state": issue.get("state"),
         "brief": _extract_brief(issue.get("body")),
         "labels": [label["name"] for label in issue.get("labels") or []],
-        "assignee": issue["assignee"]["login"] if issue.get("assignee") else None,
+        "assignees": [a["login"] for a in issue.get("assignees") or []],
         "updated_at": issue.get("updated_at"),
     }
 

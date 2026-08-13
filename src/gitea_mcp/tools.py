@@ -1314,7 +1314,7 @@ def list_issues(
 ):
     """List issues in a repository. Type can be 'issues' or 'pulls'.
 
-    brief (default True): compact view — number, title, state, labels, assignee,
+    brief (default True): compact view — number, title, state, labels, assignees,
     updated_at, and body summary extracted from a <brief>...</brief> tag.
     If brief is null for an issue, use get_issue for full details or edit_issue
     to add <brief>short summary</brief> to its body for convenient list views.
@@ -1803,7 +1803,7 @@ def list_pull_requests(
 ):
     """List pull requests in a repository.
 
-    brief (default True): compact view — number, title, state, labels, assignee,
+    brief (default True): compact view — number, title, state, labels, assignees,
     updated_at, and body summary extracted from a <brief>...</brief> tag.
     If brief is null for a PR, use get_pull_request for full details or
     edit the PR body to add <brief>short summary</brief> for convenient list views.
