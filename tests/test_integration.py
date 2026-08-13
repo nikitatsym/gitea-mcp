@@ -58,6 +58,7 @@ class TestAgentWorkflow:
     org_name = None
     team_id = None
     second_issue_index = None
+    filter_issue_index = None
     workflow_run_id = None
 
     def _issue(self, agent, index=None):
@@ -511,6 +512,49 @@ jobs:
         )
         assert isinstance(result, list)
         assert len(result) >= 1
+
+    def _assert_filter_excludes(self, agent, **filters):
+        """Assert the filter keeps the first issue and drops the control issue.
+
+        Both must show up unfiltered, so a filter that excludes everything (or
+        nothing) fails instead of passing on a one-sided positive check.
+        """
+        def numbers(**params):
+            # Raised limit keeps this independent of how many issues earlier
+            # tests create, up to Gitea's 50-item response cap (the default
+            # limit 20 plus newest-first ordering would hide the oldest).
+            return [i["number"] for i in agent.call("list_issues",
+                owner=self.owner, repo=self.repo_name, limit=100, **params,
+            )]
+
+        unfiltered = numbers()
+        assert self.issue_index in unfiltered
+        assert self.filter_issue_index in unfiltered
+
+        filtered = numbers(**filters)
+        assert self.issue_index in filtered
+        assert self.filter_issue_index not in filtered
+
+    def test_63_list_issues_milestone_filter(self, agent):
+        """Agent filters issues by milestone: issues without it must drop out."""
+        created = agent.call("create_issue",
+            owner=self.owner,
+            repo=self.repo_name,
+            title="Filter control task",
+            body="<brief>Control issue with no milestone and no assignee</brief>\nExists to prove the list_issues filters exclude non-matching issues.",
+        )
+        TestAgentWorkflow.filter_issue_index = created["number"]
+        self._assert_filter_excludes(agent, milestone="v1.0")
+
+    def test_64_list_issues_assignee_filter(self, agent):
+        """Agent filters issues by assignee: unassigned issues must drop out."""
+        agent.call("edit_issue",
+            owner=self.owner,
+            repo=self.repo_name,
+            index=self.issue_index,
+            assignees=[ADMIN_USER],
+        )
+        self._assert_filter_excludes(agent, assignee=ADMIN_USER)
 
     # ── 8. Pull Requests ──────────────────────────────────────
 
