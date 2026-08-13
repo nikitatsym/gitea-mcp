@@ -661,11 +661,7 @@ def list_my_subscriptions(
 @_op(gitea_write)
 def watch_repo(owner: str, repo: str):
     """Watch a repository."""
-    return _ok(
-        _get_client().put(
-            f"/repos/{owner}/{repo}/subscription", json={"subscribed": True}
-        )
-    )
+    return _ok(_get_client().put(f"/repos/{owner}/{repo}/subscription"))
 
 @_op(gitea_delete)
 def unwatch_repo(owner: str, repo: str):
@@ -951,7 +947,8 @@ def delete_branch(owner: str, repo: str, branch: str):
 @_op(gitea_read)
 def list_branch_protections(owner: str, repo: str):
     """List branch protections for a repository."""
-    return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/branch_protections"))
+    # Unpaginated endpoint: Gitea ignores page/limit here and returns everything.
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/branch_protections"))
 
 @_op(gitea_write)
 def create_branch_protection(
@@ -1305,7 +1302,7 @@ def list_issues(
     labels: Annotated[str | None, Field(description=(
         "Filter by label NAMES (Gitea API quirk: read filter takes names, "
         "write ops take label IDs). Comma-separated, e.g. 'bug,frontend'. "
-        "For write ops (create_issue, edit_issue, add_issue_labels, "
+        "For write ops (create_issue, add_issue_labels, "
         "replace_issue_labels) use integer IDs from list_repo_labels."
     ))] = None,
     milestone: Annotated[str | None, Field(description="Filter by milestone name OR comma-separated names. Use list_milestones to enumerate.")] = None,
@@ -1328,9 +1325,9 @@ def list_issues(
     if labels is not None:
         params["labels"] = labels
     if milestone is not None:
-        params["milestone"] = milestone
+        params["milestones"] = milestone
     if assignee is not None:
-        params["assignee"] = assignee
+        params["assigned_by"] = assignee
     if type is not None:
         params["type"] = type
     if page is not None:
@@ -1409,10 +1406,12 @@ def edit_issue(
     state: Annotated[Literal["open", "closed"] | None, Field(description="Change issue state.")] = None,
     assignees: _AssigneesPatch = None,
     milestone: _MilestonePatch = None,
-    labels: _LabelIds = None,
     due_date: Annotated[str | None, Field(description="ISO-8601 timestamp, e.g. '2026-05-20T00:00:00Z'.")] = None,
 ):
-    """Edit an issue. State can be 'open' or 'closed'. Body must include <brief>summary</brief> tag."""
+    """Edit an issue. State can be 'open' or 'closed'. Body must include <brief>summary</brief> tag.
+
+    Labels cannot be changed on this endpoint; use replace_issue_labels or
+    add_issue_labels."""
     if body is not None:
         _validate_brief(body)
     return _call("PATCH", "/repos/{owner}/{repo}/issues/{index}", locals())
@@ -1428,7 +1427,8 @@ def list_issue_comments(
 
     brief (default True): compact view — id, user login, body, timestamps.
     Set brief=False for full objects."""
-    data = _get_client().paginate(f"/repos/{owner}/{repo}/issues/{index}/comments")
+    # Unpaginated endpoint: Gitea ignores page/limit here and returns everything.
+    data = _get_client().get(f"/repos/{owner}/{repo}/issues/{index}/comments")
     if brief:
         data = _slim_comments(data)
     return _ok(data)
@@ -1871,7 +1871,7 @@ def merge_pull_request(
     delete_branch_after_merge: Annotated[bool | None, Field(description="If True, delete the head branch after a successful merge.")] = None,
 ):
     """Merge a pull request. merge_type can be: merge, rebase, rebase-merge, squash, fast-forward-only."""
-    return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/merge", locals(), rename={"merge_type": "Do", "merge_message": "merge_message_field"})
+    return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/merge", locals(), rename={"merge_type": "do", "merge_message": "merge_message_field"})
 
 @_op(gitea_read)
 def get_pull_request_diff(owner: str, repo: str, index: int):
@@ -1900,7 +1900,15 @@ def update_pull_request_branch(
     style: Annotated[Literal["merge", "rebase"] | None, Field(description="How to sync the PR head branch with its base. 'merge' (default) merges base into head; 'rebase' rewrites head on top of base.")] = None,
 ):
     """Update a pull request branch. Style can be 'merge' or 'rebase'."""
-    return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/update", locals())
+    # style is a query param on this endpoint, not a body field.
+    params: dict = {}
+    if style is not None:
+        params["style"] = style
+    return _ok(
+        _get_client().post(
+            f"/repos/{owner}/{repo}/pulls/{index}/update", params=params or None
+        )
+    )
 
 @_op(gitea_read)
 def list_pull_reviews(owner: str, repo: str, index: int):
@@ -2400,7 +2408,11 @@ def mark_notifications_read(
     last_read_at: Annotated[str | None, Field(description="ISO-8601 timestamp (e.g. '2026-05-20T12:00:00Z'). Notifications updated at or before this time are marked read. Defaults to now.")] = None,
 ):
     """Mark all notifications as read."""
-    return _call("PUT", "/notifications", locals())
+    # last_read_at is a query param on this endpoint, not a body field.
+    params: dict = {}
+    if last_read_at is not None:
+        params["last_read_at"] = last_read_at
+    return _ok(_get_client().put("/notifications", params=params or None))
 
 @_op(gitea_read)
 def get_notification_thread(thread_id: int):
@@ -2442,7 +2454,13 @@ def mark_repo_notifications_read(
     last_read_at: Annotated[str | None, Field(description="ISO-8601 timestamp (e.g. '2026-05-20T12:00:00Z'). Notifications updated at or before this time are marked read. Defaults to now.")] = None,
 ):
     """Mark all notifications in a repository as read."""
-    return _call("PUT", "/repos/{owner}/{repo}/notifications", locals())
+    # last_read_at is a query param on this endpoint, not a body field.
+    params: dict = {}
+    if last_read_at is not None:
+        params["last_read_at"] = last_read_at
+    return _ok(
+        _get_client().put(f"/repos/{owner}/{repo}/notifications", params=params or None)
+    )
 
 @_op(gitea_read)
 def get_new_notification_count():
@@ -3114,20 +3132,23 @@ def create_repo_from_template(
 @_op(gitea_read)
 def list_repo_assignees(owner: str, repo: str):
     """List users who can be assigned to issues in a repository."""
-    return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/assignees"))
+    # Unpaginated endpoint: Gitea ignores page/limit here and returns everything.
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/assignees"))
 
 @_op(gitea_read)
 def list_repo_reviewers(owner: str, repo: str):
     """List users who can review pull requests in a repository."""
-    return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/reviewers"))
+    # Unpaginated endpoint: Gitea ignores page/limit here and returns everything.
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/reviewers"))
 
 @_op(gitea_read)
 def get_pull_review_comments(
     owner: str, repo: str, index: int, review_id: int
 ):
     """List comments on a pull request review."""
+    # Unpaginated endpoint: Gitea ignores page/limit here and returns everything.
     return _ok(
-        _get_client().paginate(
+        _get_client().get(
             f"/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}/comments"
         )
     )
