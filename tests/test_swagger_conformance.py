@@ -5,8 +5,8 @@ misspelled name is an invisible bug: the call still returns 200 and the filter
 simply never applies (`milestone` where the API wants `milestones` was found
 that way). Neither the type system nor the integration suite can see that class
 of typo, so this test reads every registered op in `gitea_mcp.tools` off its own
-AST and asserts each call's method, path, query-param names and body-field names
-against the live pinned instance's `swagger.v1.json`.
+AST and asserts each call's method, path, query-param names, body-field names,
+and body requiredness against the live pinned instance's `swagger.v1.json`.
 
 Waiving a shape waives only what the reader could not see. An op that hides one
 call behind an expression the extractor cannot read still has its other calls
@@ -710,6 +710,7 @@ class _Endpoint:
     required_query: frozenset[str]
     query_enums: dict[str, frozenset[str]]
     body: frozenset[str]
+    required_body: frozenset[str]
     read_only_body: frozenset[str]
     # True when a body parameter carries no schema at all - a raw upload, whose
     # field names are not the spec's business.
@@ -733,9 +734,10 @@ class _Swagger:
 
     def _endpoint(self, operation: dict[str, Any]) -> _Endpoint:
         query: set[str] = set()
-        required: set[str] = set()
+        required_query: set[str] = set()
         enums: dict[str, frozenset[str]] = {}
         body: set[str] = set()
+        required_body: set[str] = set()
         read_only: set[str] = set()
         schemaless = False
         for param in operation.get("parameters") or []:
@@ -743,7 +745,7 @@ class _Swagger:
             if where == "query":
                 query.add(param["name"])
                 if param.get("required"):
-                    required.add(param["name"])
+                    required_query.add(param["name"])
                 # Formal enums only; prose-documented value sets are not
                 # machine-checkable and are skipped.
                 values = param.get("enum") or (param.get("items") or {}).get("enum")
@@ -751,39 +753,47 @@ class _Swagger:
                     enums[param["name"]] = frozenset(values)
             elif where == "formData":
                 body.add(param["name"])
+                if param.get("required"):
+                    required_body.add(param["name"])
             elif where == "body":
                 schema = param.get("schema") or {}
                 schemaless = schemaless or not schema
-                names, hidden = self._properties(schema)
+                names, hidden, needed = self._properties(schema)
                 body |= names
+                required_body |= needed
                 read_only |= hidden
         return _Endpoint(
             frozenset(query),
-            frozenset(required),
+            frozenset(required_query),
             enums,
             frozenset(body),
+            frozenset(required_body),
             frozenset(read_only),
             schemaless,
         )
 
-    def _properties(self, schema: dict[str, Any], depth: int = 0) -> tuple[set[str], set[str]]:
-        """All declared property names, and the subset marked readOnly."""
+    def _properties(
+        self, schema: dict[str, Any], depth: int = 0
+    ) -> tuple[set[str], set[str], set[str]]:
+        """Declared property names, readOnly names, and required names."""
         if depth > 8 or not isinstance(schema, dict):
-            return set(), set()
+            return set(), set(), set()
         ref = schema.get("$ref")
         if ref:
             return self._properties(self._defs.get(ref.rsplit("/", 1)[-1]) or {}, depth + 1)
-        declared = schema.get("properties") or {}
-        names = set(declared)
-        read_only = {
+        declared: dict[str, Any] = schema.get("properties") or {}
+        names: set[str] = set(declared)
+        required: set[str] = set(schema.get("required") or ())
+        read_only: set[str] = {
             name for name, prop in declared.items()
             if isinstance(prop, dict) and prop.get("readOnly")
         }
         for member in schema.get("allOf") or []:
-            more, more_read_only = self._properties(member, depth + 1)
+            more, more_read_only, more_required = self._properties(member, depth + 1)
             names |= more
             read_only |= more_read_only
-        return names, read_only
+            required |= more_required
+        return names, read_only, required
 
     def _pool(self, path: str) -> list[str]:
         # An exact template match is unambiguous by construction; structural
@@ -993,6 +1003,38 @@ def _arg_wire_names(fn: Callable[..., Any]) -> dict[str, str]:
                         if isinstance(key, ast.Constant) and isinstance(value, ast.Constant):
                             mapping[key.value] = value.value
     return mapping
+
+
+def test_required_body_params_are_required(swagger: _Swagger) -> None:
+    """An omitted MCP param cannot omit a body field Gitea requires."""
+    findings: list[str] = []
+    for op, call in _checked_calls():
+        matches = swagger.candidates(call.path, call.method)
+        if len(matches) != 1:
+            continue  # reported by test_wire_calls_match_swagger
+        endpoint = swagger.endpoints[matches[0], call.method]
+        required_on_wire = endpoint.required_body & call.body
+        if not required_on_wire:
+            continue
+        fn = getattr(tools, op)
+        required_args = set(fn._params_model.model_json_schema().get("required") or ())
+        wire_of = _arg_wire_names(fn)
+        for arg, param in inspect.signature(fn).parameters.items():
+            wire = wire_of.get(arg, arg)
+            if wire not in required_on_wire or arg in required_args:
+                continue
+            default_is_omitted = param.default is None or isinstance(
+                param.default, server._Unset
+            )
+            if default_is_omitted:
+                findings.append(
+                    f"{op}.{arg} -> {call.method} {call.path} body field {wire!r}: "
+                    "required by Gitea but omitted when the MCP param is absent"
+                )
+    assert not findings, (
+        f"{len(findings)} optional MCP body parameter(s) omit fields Gitea requires:\n"
+        + "\n".join(f"  {f}" for f in findings)
+    )
 
 
 def _literal_values(annotation: Any) -> frozenset[str]:

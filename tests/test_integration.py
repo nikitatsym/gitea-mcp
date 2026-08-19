@@ -2232,6 +2232,7 @@ jobs:
         """Agent edits a team."""
         result = agent.call("edit_team",
             team_id=self.team_id,
+            name="developers",
             description="Updated team description",
         )
         assert result["description"] == "Updated team description"
