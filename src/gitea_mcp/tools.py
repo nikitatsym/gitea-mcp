@@ -100,11 +100,13 @@ def _call(
 
 # ── Groups ────────────────────────────────────────────────────────────────────
 
+# Operation names are `$`-placeholders resolved by `server._render_group_doc`;
+# the columns line up in the rendered doc, not in this source literal.
 _GROUP_USAGE = (
     "\n\n"
-    "operation='help'                        — list ops with parameter names + types.\n"
-    "operation='help' params={'search':'X'}  — same, filtered to ops whose name contains X (case-insensitive).\n"
-    "operation='schema'                      — JSON Schema for one op. params={'op': 'OpName'} or params={} to list op names.\n"
+    "operation='$help'                        — list ops with parameter names + types.\n"
+    "operation='$help' params={'search':'X'}  — same, filtered to ops whose name contains X (case-insensitive).\n"
+    "operation='$schema'                      — JSON Schema for one op. params={'op': 'OpName'} or params={} to list op names.\n"
     "operation='<OpName>' params={...}       — invoke. Params validated strictly: "
     "unknown keys, wrong types, missing required → ValueError with field-level detail."
 )
