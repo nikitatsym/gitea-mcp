@@ -2296,7 +2296,7 @@ def create_team(
 @_op(gitea_write)
 def edit_team(
     team_id: int,
-    name: str | None = None,
+    name: Annotated[str, Field(description="Team name to keep or replace; Gitea requires it on every edit.")],
     description: str | None = None,
     permission: _TeamPermission = None,
     units: Annotated[list[str] | None, Field(description=(
@@ -2606,10 +2606,10 @@ def admin_create_user(
 @_op(gitea_admin_write)
 def admin_edit_user(
     username: str,
+    login_name: Annotated[str, Field(description="External login name; for local accounts pass the current username. Gitea requires it on every edit.")],
     email: Annotated[str | None, Field(description="New primary email address.")] = None,
     password: Annotated[str | None, Field(description="New password (subject to Gitea's password policy).")] = None,
     must_change_password: Annotated[bool | None, Field(description="True = require the user to set a new password on next login.")] = None,
-    login_name: Annotated[str | None, Field(description="External login name for linked auth sources.")] = None,
     active: Annotated[bool | None, Field(description="False = deactivate the account (cannot log in).")] = None,
     admin: Annotated[bool | None, Field(description="True = grant site-admin privileges; False = revoke.")] = None,
     allow_git_hook: Annotated[bool | None, Field(description="True = allow this user to configure server-side git hooks on their repos.")] = None,
