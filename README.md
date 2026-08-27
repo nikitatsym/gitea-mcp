@@ -78,7 +78,8 @@ gitea_write(operation="CreateIssue", params={"owner": "alice", "repo": "x", "tit
 gitea_execute(operation="MergePullRequest", params={"owner": "alice", "repo": "x", "index": 7, "merge_type": "squash"})
 ```
 
-Params are validated strictly via Pydantic: unknown keys, wrong types, and missing required fields all surface as a `ValueError` with field-level detail.
+Params are validated strictly via Pydantic: unknown keys, wrong types, and
+missing required fields return a contextual error result with field-level detail.
 
 ## Creating a Gitea API Token
 

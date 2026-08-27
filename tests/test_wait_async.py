@@ -247,19 +247,19 @@ class TestWaitsListAndDispatch:
         assert snap["status"] == "success"
         assert poll["wait_id"] == snap["wait_id"]
 
-        with pytest.raises(ValueError, match="ctx"):
-            server._dispatch(
-                "WorkflowRunsWait", "gitea_read",
-                {"owner": "me", "repo": "proj", "run_id": 42, "ctx": "evil"},
-            )
+        result = server._dispatch(
+            "WorkflowRunsWait", "gitea_read",
+            {"owner": "me", "repo": "proj", "run_id": 42, "ctx": "evil"},
+        )
+        assert "ctx" in result["error"]
 
     def test_wrong_group_hint(self):
         seed(make_handler({}))
-        with pytest.raises(ValueError, match="belongs to 'gitea_read'"):
-            server._dispatch(
-                "WorkflowRunsWaitStart", "gitea_execute",
-                {"owner": "me", "repo": "proj", "run_id": 42},
-            )
+        result = server._dispatch(
+            "WorkflowRunsWaitStart", "gitea_execute",
+            {"owner": "me", "repo": "proj", "run_id": 42},
+        )
+        assert "belongs to 'gitea_read'" in result["error"]
 
     def test_resource_returns_snapshot_json(self):
         seed_run_script(("completed", "success"), jobs=[])

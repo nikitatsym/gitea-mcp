@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import json as _json
 import re
@@ -9,7 +10,9 @@ import string
 import types
 import typing
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 from mcp.server.mcpserver import Context, MCPServer
 from pydantic import (
     BaseModel,
@@ -22,6 +25,7 @@ from pydantic import (
 from pydantic_core import PydanticUndefined
 
 from . import tools as _tools_module
+from .client import GiteaError
 from .registry import _UNSET, ROOT, _Unset
 from .wait_registry import WAIT_REGISTRY as _WAIT_REGISTRY
 
@@ -309,33 +313,171 @@ def _build_schema(group_name: str, op_name: str | None) -> dict:
     return schema
 
 
-def _dispatch(operation: str, group_name: str, params: dict, ctx: Context | None = None):
-    """Route an operation call: schema/help-aware, fails loud on anything wrong.
-
-    Async ops (the waiters) return a coroutine which is returned as-is —
-    the meta-tool `tool_fn` awaits it. Sync callers dispatching an async op
-    directly must `asyncio.run(...)` the result themselves.
+_URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s'\"<>]+", re.IGNORECASE)
+_RELATIVE_QUERY_RE = re.compile(r"/[^\s?,'\"<>]*\?[^ \t\r\n,'\"<>]*")
+_SECRET_VALUE_RE = re.compile(
+    r"""(?ix)
+    (["']?(?:authorization|token|api[_-]?key|client[_-]?secret|access[_-]?secret|
+    password|credential|dsn)["']?\s*[:=]\s*)
+    (?:["'][^"']*["']|[^,\s}]+)
     """
-    if operation == "schema":
-        return _build_schema(group_name, params.get("op"))
-    ops = _group_ops[group_name]
-    if operation not in ops:
-        if operation in _all_grouped:
-            correct = _all_grouped[operation]
-            raise ValueError(
-                f"{operation!r} belongs to {correct!r}, not {group_name!r}. "
-                f"Call {correct}(operation={operation!r}, ...) instead."
+)
+_AUTHORIZATION_RE = re.compile(
+    r"(?i)(authorization\s*[:=]\s*)(?:bearer|basic)\s+[^\s,;]+"
+)
+
+
+def _redact_error_text(value: object) -> str:
+    """Remove credentials and query values from text returned to MCP callers."""
+    text = str(value)
+
+    def _redact_url(match: re.Match[str]) -> str:
+        try:
+            parts = urlsplit(match.group())
+            host = parts.hostname
+            if host is None:
+                return "<redacted-url>"
+            if ":" in host:
+                host = f"[{host}]"
+            try:
+                port = parts.port
+            except ValueError:
+                # no-report: an out-of-range port is scrub input, dropping it is the redaction
+                port = None
+            netloc = f"{host}:{port}" if port is not None else host
+            return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+        except ValueError:
+            # no-report: an unparsable URL is scrub input, reporting it re-emits the secret
+            return "<redacted-url>"
+
+    text = _URL_RE.sub(_redact_url, text)
+    text = _RELATIVE_QUERY_RE.sub(lambda match: match.group().split("?", 1)[0], text)
+    text = _AUTHORIZATION_RE.sub(r"\1<redacted>", text)
+    return _SECRET_VALUE_RE.sub(r"\1<redacted>", text)
+
+
+def _validate_help_params(search: object | None) -> str | None:
+    """Reject malformed meta-operation input before help rendering."""
+    if search is not None and not isinstance(search, str):
+        raise ValueError("help parameter 'search' must be a string")
+    return search
+
+
+# Expected failures at the tool boundary. Deliberately Exception-only: a
+# cancellation or KeyboardInterrupt is a BaseException and must keep propagating.
+_EXPECTED_FAILURES: tuple[type[Exception], ...] = (
+    ValueError,
+    GiteaError,
+    httpx.HTTPError,
+)
+
+
+def _error_result(exc: Exception) -> dict[str, str]:
+    """Render an expected failure as a contextual, secret-safe operation result."""
+    if isinstance(exc, httpx.HTTPError):
+        request: httpx.Request | None = None
+        if isinstance(exc, (httpx.RequestError, httpx.HTTPStatusError)):
+            try:
+                request = exc.request
+            except RuntimeError:
+                # no-report: httpx raises when a RequestError has no request, absence is normal
+                pass
+        method = request.method if request is not None else "REQUEST"
+        path = request.url.path if request is not None else "<unknown path>"
+        cause = _redact_error_text(exc) or "request failed"
+        return {
+            "error": (
+                f"Gitea request failed: {method} {path}: "
+                f"{type(exc).__name__}: {cause}"
             )
-        raise ValueError(
-            f"Unknown operation {operation!r} in {group_name}. "
-            "Use operation='help' to list or operation='schema' for details."
-        )
-    return _coerce_call(ops[operation], params, operation, ctx)
+        }
+    return {"error": _redact_error_text(exc)}
+
+
+async def _await_op(coro):
+    """Await an async op, mapping the same failures `_dispatch` maps.
+
+    An async op's body doesn't run until awaited, so `_dispatch`'s own guard
+    never sees its failures. Cancellation is a BaseException and still
+    propagates, leaving waiter cancellation semantics untouched.
+    """
+    try:
+        return await coro
+    except _EXPECTED_FAILURES as exc:
+        # no-report: expected caller-correctable MCP failure is returned as result data; propagation becomes a contextless tool failure and telemetry would misclassify it as a server fault
+        return _error_result(exc)
+
+
+def _dispatch(operation: str, group_name: str, params: dict, ctx: Context | None = None):
+    """Route an operation call, reporting expected failures as `{"error": ...}`.
+
+    Bad params, an unknown operation, a Gitea API error, and a transport failure
+    all come back as data; an exception crossing the MCP boundary would reach
+    the caller as a contextless tool failure instead.
+
+    Async ops (the waiters) return a coroutine, wrapped so a failure raised at
+    await time maps identically - the meta-tool `tool_fn` awaits it. Sync
+    callers dispatching an async op directly must `asyncio.run(...)` the result
+    themselves.
+    """
+    try:
+        if operation == "help":
+            return _build_help(group_name, search=_validate_help_params(params.get("search")))
+        if operation == "schema":
+            return _build_schema(group_name, params.get("op"))
+        ops = _group_ops[group_name]
+        if operation not in ops:
+            if operation in _all_grouped:
+                correct = _all_grouped[operation]
+                raise ValueError(
+                    f"{operation!r} belongs to {correct!r}, not {group_name!r}. "
+                    f"Call {correct}(operation={operation!r}, ...) instead."
+                )
+            raise ValueError(
+                f"Unknown operation {operation!r} in {group_name}. "
+                "Use operation='help' to list or operation='schema' for details."
+            )
+        result = _coerce_call(ops[operation], params, operation, ctx)
+    except _EXPECTED_FAILURES as exc:
+        # no-report: expected caller-correctable MCP failure is returned as result data; propagation becomes a contextless tool failure and telemetry would misclassify it as a server fault
+        return _error_result(exc)
+    if inspect.iscoroutine(result):
+        return _await_op(result)
+    return result
+
+
+def _safe_root(fn):
+    """Wrap a ROOT tool so it reports expected failures the way `_dispatch` does.
+
+    ROOT tools are registered under their own name and never pass through
+    `_dispatch`. Sync stays sync: MCPServer runs sync tools in a worker thread,
+    so an async wrapper would move a blocking HTTP call onto the event loop.
+    """
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def async_root(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except _EXPECTED_FAILURES as exc:
+                # no-report: expected caller-correctable MCP failure is returned as result data; propagation becomes a contextless tool failure and telemetry would misclassify it as a server fault
+                return _error_result(exc)
+
+        return async_root
+
+    @functools.wraps(fn)
+    def sync_root(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except _EXPECTED_FAILURES as exc:
+            # no-report: expected caller-correctable MCP failure is returned as result data; propagation becomes a contextless tool failure and telemetry would misclassify it as a server fault
+            return _error_result(exc)
+
+    return sync_root
 
 
 # ── Group doc rendering ──────────────────────────────────────────────────────
 
-# Answered by the meta-tool before the op lookup, so they are never registered ops.
+# Answered by the dispatcher before the op lookup, so they are never registered ops.
 _META_OPERATIONS = frozenset({"help", "schema"})
 
 _HARDCODED_OPERATION = re.compile(r"""\boperation\s*=\s*["'](?![$<])""")
@@ -376,7 +518,7 @@ def _register_tools():
         fn._params_model = _build_params_model(fn)
         group = fn._mcp_group
         if group is ROOT:
-            mcp.tool()(fn)
+            mcp.tool()(_safe_root(fn))
         else:
             if group.name not in groups:
                 groups[group.name] = (group, {})
@@ -401,8 +543,6 @@ def _register_tools():
                 ctx: Context | None = None,
             ):
                 params = params or {}
-                if operation == "help":
-                    return _build_help(gname, search=params.get("search"))
                 result = _dispatch(operation, gname, params, ctx)
                 if inspect.iscoroutine(result):
                     result = await result

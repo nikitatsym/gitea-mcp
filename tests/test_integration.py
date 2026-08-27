@@ -17,25 +17,28 @@ from conftest import (
     wait_for_workflow_run,
 )
 
-from gitea_mcp.client import GiteaError
-
 pytestmark = pytest.mark.integration
 
 ADMIN_USER = "testadmin"
 
 
 @contextmanager
-def gitea_error(status: int, message: str):
-    """Assert the wrapped call fails with exactly this Gitea status and body.
+def gitea_error(agent, status: int, message: str):
+    """Assert the wrapped call reports exactly this Gitea status and body.
 
     Used where the op cannot succeed in the test environment (no runner, no
     signing key, nothing orphaned to adopt): the contract gets pinned instead
-    of the failure being waved through.
+    of the failure being waved through. Tools report API failures as
+    `{"error": ...}` result data, so the check reads the recorded result.
     """
-    with pytest.raises(GiteaError) as exc:
-        yield
-    assert exc.value.status == status, f"expected {status}, got: {exc.value}"
-    assert message in str(exc.value.body), f"body missing {message!r}: {exc.value}"
+    before = len(agent.call_log)
+    yield
+    made = agent.call_log[before:]
+    assert made, "no tool call was recorded inside the gitea_error block"
+    result = made[-1]["result"]
+    error = result.get("error", "") if isinstance(result, dict) else ""
+    assert f"Gitea API {status} " in error, f"expected {status}, got: {error!r}"
+    assert message in error, f"error missing {message!r}: {error!r}"
 
 
 @pytest.mark.usefixtures("configure_env")
@@ -1274,7 +1277,7 @@ jobs:
     def test_175_check_following(self, agent):
         """Agent checks a following relationship it hasn't established yet."""
         # test_310 covers the positive side after actually following.
-        with gitea_error(404, "not found"):
+        with gitea_error(agent, 404, "not found"):
             agent.call("check_user_following",
                 username=ADMIN_USER, target="testuser2",
             )
@@ -1335,7 +1338,7 @@ jobs:
     def test_183_repo_teams(self, agent):
         """Agent lists teams of a user-owned repo — Gitea serves this only for
         org repos (405). The org-repo path is covered in test_330."""
-        with gitea_error(405, "repo is not owned by an organization"):
+        with gitea_error(agent, 405, "repo is not owned by an organization"):
             agent.call("list_repo_teams",
                 owner=self.owner, repo=self.repo_name,
             )
@@ -1438,7 +1441,7 @@ jobs:
     def test_196_get_signing_key(self, agent):
         """Agent asks for the instance signing key — the test instance has no
         [repository.signing] key configured, so Gitea says so outright."""
-        with gitea_error(404, "no signing key"):
+        with gitea_error(agent, 404, "no signing key"):
             agent.call_raw("get_signing_key")
 
     def test_197_get_nodeinfo(self, agent):
@@ -1446,7 +1449,7 @@ jobs:
 
         1.26 gutted federation: the route now maps to activitypub.NotImplemented,
         so the only contract left to pin is its 501."""
-        with gitea_error(501, "Not implemented"):
+        with gitea_error(agent, 501, "Not implemented"):
             agent.call("get_nodeinfo")
 
     def test_198_list_repo_reviewers(self, agent):
@@ -1470,7 +1473,7 @@ jobs:
         sha = commits[0]["sha"]
         # Gitea reports a missing note as a missing commit; pushing a real note
         # needs git over SSH/HTTP, which is outside the MCP surface.
-        with gitea_error(404, "commit doesn't exist"):
+        with gitea_error(agent, 404, "commit doesn't exist"):
             agent.call("get_repo_git_notes",
                 owner=self.owner, repo=self.repo_name, sha=sha,
             )
@@ -1819,7 +1822,7 @@ jobs:
 
         # Only APPROVED / REQUEST_CHANGES reviews are dismissible, and Gitea
         # refuses both on your own PR — so 403 is the reachable contract here.
-        with gitea_error(403, "not need to dismiss this review"):
+        with gitea_error(agent, 403, "not need to dismiss this review"):
             agent.call("dismiss_pull_review",
                 owner=self.owner, repo=self.repo_name,
                 index=pr_idx,
@@ -1868,7 +1871,7 @@ jobs:
             owner=self.owner, repo=self.repo_name,
             release_id=self.release_id,
         )
-        with gitea_error(404, "not found"):
+        with gitea_error(agent, 404, "not found"):
             agent.call("get_release",
                 owner=self.owner, repo=self.repo_name,
                 release_id=self.release_id,
@@ -2005,7 +2008,7 @@ jobs:
         """Agent lists GPG keys and gets rejected on a malformed one."""
         assert agent.call("list_gpg_keys") == []
 
-        with gitea_error(422, "failed to parse gpg key"):
+        with gitea_error(agent, 422, "failed to parse gpg key"):
             agent.call("create_gpg_key",
                 armored_public_key="not-a-real-key",
             )
@@ -2082,9 +2085,9 @@ jobs:
         # event, and Gitea skips the doer, so the inbox stays empty.
         assert agent.call("list_notifications") == []
 
-        with gitea_error(404, "notification does not exist"):
+        with gitea_error(agent, 404, "notification does not exist"):
             agent.call("get_notification_thread", thread_id=999999)
-        with gitea_error(404, "notification does not exist"):
+        with gitea_error(agent, 404, "notification does not exist"):
             agent.call("mark_notification_read", thread_id=999999)
 
     # ── 44. User mgmt extended ────────────────────────────────
@@ -2096,7 +2099,7 @@ jobs:
             username=ADMIN_USER, target="testuser2",
         )
         agent.call("unfollow_user", username="testuser2")
-        with gitea_error(404, "not found"):
+        with gitea_error(agent, 404, "not found"):
             agent.call("check_user_following",
                 username=ADMIN_USER, target="testuser2",
             )
@@ -2221,7 +2224,7 @@ jobs:
         agent.call("remove_org_public_member",
             org=self.org_name, username=ADMIN_USER,
         )
-        with gitea_error(404, "not found"):
+        with gitea_error(agent, 404, "not found"):
             agent.call("check_org_public_member",
                 org=self.org_name, username=ADMIN_USER,
             )
@@ -2338,11 +2341,11 @@ jobs:
         and delete-unadopted only have their 404 contract to assert."""
         assert agent.call("admin_list_unadopted_repos") == []
 
-        with gitea_error(404, "not found"):
+        with gitea_error(agent, 404, "not found"):
             agent.call("admin_adopt_repo",
                 owner=ADMIN_USER, repo="nonexistent-repo",
             )
-        with gitea_error(404, "not found"):
+        with gitea_error(agent, 404, "not found"):
             agent.call("admin_delete_unadopted_repo",
                 owner=ADMIN_USER, repo="nonexistent-repo",
             )
@@ -2410,7 +2413,7 @@ jobs:
         agent.call("delete_package",
             owner=self.owner, type="generic", name="agent-pkg", version="1.0.0",
         )
-        with gitea_error(404, "package does not exist"):
+        with gitea_error(agent, 404, "package does not exist"):
             agent.call("get_package",
                 owner=self.owner, type="generic", name="agent-pkg", version="1.0.0",
             )
@@ -2445,7 +2448,7 @@ jobs:
         assert job["run_id"] == run_id
 
         # Logs only exist once a runner picks the job up; none is registered.
-        with gitea_error(404, "job not started"):
+        with gitea_error(agent, 404, "job not started"):
             agent.call("get_workflow_job_logs",
                 owner=self.owner, repo=self.repo_name, job_id=job_id,
             )
@@ -2467,11 +2470,11 @@ jobs:
         )
         assert token["token"]
 
-        with gitea_error(404, "Runner not found"):
+        with gitea_error(agent, 404, "Runner not found"):
             agent.call("get_repo_runner",
                 owner=self.owner, repo=self.repo_name, runner_id=99999,
             )
-        with gitea_error(404, "Runner not found"):
+        with gitea_error(agent, 404, "Runner not found"):
             agent.call("delete_repo_runner",
                 owner=self.owner, repo=self.repo_name, runner_id=99999,
             )
@@ -2483,9 +2486,9 @@ jobs:
         }
         assert agent.call("create_org_runner_token", org=self.org_name)["token"]
 
-        with gitea_error(404, "Runner not found"):
+        with gitea_error(agent, 404, "Runner not found"):
             agent.call("get_org_runner", org=self.org_name, runner_id=99999)
-        with gitea_error(404, "Runner not found"):
+        with gitea_error(agent, 404, "Runner not found"):
             agent.call("delete_org_runner", org=self.org_name, runner_id=99999)
 
     def test_392_user_runners(self, agent):
@@ -2493,9 +2496,9 @@ jobs:
         assert agent.call("list_user_runners") == {"runners": [], "total_count": 0}
         assert agent.call("create_user_runner_token")["token"]
 
-        with gitea_error(404, "Runner not found"):
+        with gitea_error(agent, 404, "Runner not found"):
             agent.call("get_user_runner", runner_id=99999)
-        with gitea_error(404, "Runner not found"):
+        with gitea_error(agent, 404, "Runner not found"):
             agent.call("delete_user_runner", runner_id=99999)
 
     def test_393_admin_runners(self, agent):
@@ -2503,9 +2506,9 @@ jobs:
         assert agent.call("list_admin_runners") == {"runners": [], "total_count": 0}
         assert agent.call("create_admin_runner_token")["token"]
 
-        with gitea_error(404, "Runner not found"):
+        with gitea_error(agent, 404, "Runner not found"):
             agent.call("get_admin_runner", runner_id=99999)
-        with gitea_error(404, "Runner not found"):
+        with gitea_error(agent, 404, "Runner not found"):
             agent.call("delete_admin_runner", runner_id=99999)
 
     # ── 53. Org member removal (before cleanup) ───────────────
@@ -2584,19 +2587,19 @@ jobs:
         """Agent cleans up the organization."""
         agent.call("delete_team", team_id=self.team_id)
         agent.call("delete_org", org=self.org_name)
-        with gitea_error(404, "does not exist"):
+        with gitea_error(agent, 404, "does not exist"):
             agent.call("get_org", org=self.org_name)
 
     def test_901_cleanup_user(self, agent):
         """Agent cleans up the test user."""
         agent.call("admin_delete_user", username="testuser2", purge=True)
-        with gitea_error(404, "does not exist"):
+        with gitea_error(agent, 404, "does not exist"):
             agent.call("get_user", username="testuser2")
 
     def test_999_delete_repo(self, agent):
         """Agent deletes the test repo."""
         agent.call("delete_repo", owner=self.owner, repo=self.repo_name)
-        with gitea_error(404, "not found"):
+        with gitea_error(agent, 404, "not found"):
             agent.call("get_repo", owner=self.owner, repo=self.repo_name)
 
     def test_final_print_log(self, agent):
