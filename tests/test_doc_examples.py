@@ -7,9 +7,12 @@ example from naming an operation the group does not expose.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import json
 
 import pytest
+from mcp.types import TextContent
 
 from gitea_mcp import server, tools
 from gitea_mcp.registry import Group
@@ -63,3 +66,22 @@ def test_render_group_doc_resolves_meta_and_keeps_generic_form():
         "gitea_read", "operation='$help' or operation='$schema' or operation='<OpName>'", {}
     )
     assert rendered == "operation='help' or operation='schema' or operation='<OpName>'"
+
+
+def test_registered_tools_return_compact_json():
+    registered_tools = server.mcp._tool_manager.list_tools()
+    assert all(tool.fn_metadata.output_schema is None for tool in registered_tools)
+
+    group_tool = next(tool for tool in registered_tools if tool.name == "gitea_read")
+    assert group_tool.context_kwarg == "ctx"
+
+    result = asyncio.run(server.mcp.call_tool("gitea_read", {"operation": "schema"}))
+    assert result.structured_content is None
+    assert len(result.content) == 1
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    assert "\n" not in content.text
+    assert json.loads(content.text) == {
+        "operations": sorted(server._group_ops["gitea_read"]),
+        "hint": "Pass params={'op': '<OpName>'} to get the full JSON Schema.",
+    }
