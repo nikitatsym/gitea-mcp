@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 import subprocess
 import tempfile
@@ -22,6 +23,7 @@ from typing import Any
 
 import httpx
 import pytest
+from mcp.types import TextContent
 
 import gitea_mcp.tools as _tools
 from gitea_mcp.config import set_allow_public
@@ -91,17 +93,11 @@ class AgentSimulator:
             self._tools[tool.name] = tool.fn
 
     def call(self, tool_name: str, **kwargs) -> Any:
-        """Call an MCP tool by name and return its result.
-
-        Tools hand back Python objects (dict/list) already, or plain text for
-        the raw endpoints (diffs, archives, logs) — nothing on this path needs
-        JSON decoding. `call_raw` is the same thing, named at the call site
-        where the test deliberately wants unparsed text.
-        """
+        """Call an MCP tool by name and return its result."""
         return self.call_raw(tool_name, **kwargs)
 
     def call_raw(self, tool_name: str, **kwargs) -> Any:
-        """Call an MCP tool and return its raw result.
+        """Call an MCP tool while preserving raw text endpoints.
 
         Converts snake_case to the PascalCase operation and dispatches via
         the right meta-tool group (or a ROOT tool directly).
@@ -120,6 +116,8 @@ class AgentSimulator:
             result = fn(**kwargs)
         if inspect.iscoroutine(result):
             result = asyncio.run(result)  # meta-tools are async; tests call sync
+        if isinstance(result, TextContent):
+            result = json.loads(result.text)
         self.call_log.append({"tool": tool_name, "kwargs": kwargs, "result": result})
         return result
 

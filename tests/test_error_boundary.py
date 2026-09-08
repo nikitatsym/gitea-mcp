@@ -10,9 +10,11 @@ the ROOT tool, and the programming-error edge.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 import pytest
+from mcp.types import TextContent
 from waiter_fixtures import seed, tools_state
 
 from gitea_mcp import server
@@ -32,6 +34,11 @@ def _root_tool(name):
 def _group_tool(name: str):
     """The registered group tool, i.e. exactly what an MCP client calls."""
     return server.mcp._tool_manager._tools[name].fn
+
+
+def _data_result(result):
+    assert isinstance(result, TextContent)
+    return json.loads(result.text)
 
 
 def _responding(status: int, body):
@@ -89,8 +96,8 @@ def test_missing_required_param_is_reported():
 def test_registered_group_reports_invalid_help_input():
     seed(_responding(200, {}))
 
-    result = asyncio.run(
-        _group_tool("gitea_read")(operation="help", params={"search": 1})
+    result = _data_result(
+        asyncio.run(_group_tool("gitea_read")(operation="help", params={"search": 1}))
     )
 
     assert result == {"error": "help parameter 'search' must be a string"}
@@ -122,7 +129,7 @@ def test_root_version_reports_api_failure():
     """gitea_version bypasses _dispatch; the registration seam guards it."""
     seed(_responding(503, {"message": "service unavailable"}))
 
-    result = _root_tool("gitea_version")()
+    result = _data_result(_root_tool("gitea_version")())
 
     assert result == {
         "error": (
@@ -134,7 +141,7 @@ def test_root_version_reports_api_failure():
 def test_root_version_reports_transport_failure():
     seed(_refusing(httpx.ReadTimeout("timed out")))
 
-    result = _root_tool("gitea_version")()
+    result = _data_result(_root_tool("gitea_version")())
 
     assert result == {
         "error": (
@@ -146,7 +153,7 @@ def test_root_version_reports_transport_failure():
 def test_root_version_keeps_its_success_shape():
     seed(_responding(200, {"version": "1.24.0"}))
 
-    result = _root_tool("gitea_version")()
+    result = _data_result(_root_tool("gitea_version")())
 
     assert result["service"] == {"version": "1.24.0"}
     assert result["mcp"]
