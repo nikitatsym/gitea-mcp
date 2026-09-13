@@ -2,8 +2,12 @@ import argparse
 
 from mcp.server.transport_security import TransportSecuritySettings
 
-from .config import set_allow_public
+from .client import GiteaClient
+from .config import Settings, set_allow_public
 from .server import mcp
+from .tools import client_var
+
+__all__ = ["GiteaClient", "Settings", "client_var", "main", "mcp"]
 
 
 def main() -> None:
