@@ -5,6 +5,7 @@ import base64
 import logging
 import re
 import time
+from contextvars import ContextVar
 from importlib.metadata import version as _pkg_version
 from typing import Annotated, Literal
 
@@ -40,11 +41,16 @@ from .wait_registry import (
     WaitHandle as _WaitHandle,
 )
 
+# Set by a host that serves several Gitea instances from one process; the
+# module singleton is the single-instance path.
+client_var: ContextVar[GiteaClient | None] = ContextVar("gitea_client", default=None)
 _client: GiteaClient | None = None
 
 
 def _get_client() -> GiteaClient:
     global _client
+    if (bound := client_var.get()) is not None:
+        return bound
     if _client is None:
         _client = GiteaClient()
     return _client
