@@ -40,6 +40,17 @@ class GiteaClient:
             transport=transport,
         )
 
+    def check(self) -> dict:
+        """Verify the credential; returns what the version tool reports as `service`.
+
+        Gitea serves /version anonymously but rejects an Authorization header it
+        cannot resolve, so this catches a bad token without requiring a token
+        scope the rest of the session may not need.
+        """
+        if not self._base or not self._token:
+            raise ValueError("GITEA_URL and GITEA_TOKEN must be set")
+        return self.get("/version")
+
     # ── low-level ────────────────────────────────────────────
 
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:

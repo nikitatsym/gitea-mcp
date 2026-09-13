@@ -207,7 +207,7 @@ _BpStatusCheckContexts = Annotated[list[str] | None, Field(description="Required
 @_op(ROOT)
 def gitea_version():
     """Get the Gitea MCP server version and service version."""
-    return {"mcp": _pkg_version("gitea-mcp"), "service": _get_client().get("/version")}
+    return {"mcp": _pkg_version("gitea-mcp"), "service": _get_client().check()}
 
 @_op(gitea_read)
 def get_current_user():
