@@ -39,6 +39,10 @@ For Claude Code global config on macOS: `~/.claude.json` → `"mcpServers"`.
 
 Or use the interactive **[Setup Page](https://nikitatsym.github.io/gitea-mcp/)** to generate the config.
 
+### HTTP
+
+`gitea-mcp --http` serves streamable HTTP at `http://127.0.0.1:8000/mcp` (`--host`, `--port`) instead of stdio, same environment variables. No authentication: put a gateway in front.
+
 ## Configuration
 
 | Variable | Required | Description |
