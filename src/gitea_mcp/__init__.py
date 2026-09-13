@@ -1,12 +1,42 @@
-import sys
+import argparse
+
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import set_allow_public
 from .server import mcp
 
 
-def main():
-    if "--allow-public" in sys.argv:
-        sys.argv.remove("--allow-public")
-        set_allow_public(True)
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="gitea-mcp",
+        description="MCP server for Gitea. Serves MCP over stdio unless --http is given.",
+    )
+    parser.add_argument(
+        "--http",
+        action="store_true",
+        help="serve streamable HTTP at /mcp instead of stdio, for a gateway in front",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="bind address for --http")
+    parser.add_argument("--port", type=int, default=8000, help="port for --http")
+    parser.add_argument(
+        "--allow-public",
+        action="store_true",
+        help="allow creating public repositories and organizations; blocked by default",
+    )
+    args = parser.parse_args()
+
+    set_allow_public(args.allow_public)
+
+    if args.http:
+        # Stateless: the gateway in front opens a session per call; nothing outlives a request.
+        # It also forwards the public Host header, which the SDK's loopback rebinding guard 421s.
+        mcp.run(
+            transport="streamable-http",
+            host=args.host,
+            port=args.port,
+            stateless_http=True,
+            transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+        )
+        return
 
     mcp.run(transport="stdio")
