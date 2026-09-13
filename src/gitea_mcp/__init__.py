@@ -5,7 +5,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from .client import GiteaClient
 from .config import Settings, set_allow_public
 from .server import mcp
-from .tools import client_var
+from .tools import _get_client, client_var
 
 __all__ = ["GiteaClient", "Settings", "client_var", "main", "mcp"]
 
@@ -30,6 +30,9 @@ def main() -> None:
     args = parser.parse_args()
 
     set_allow_public(args.allow_public)
+
+    # Refuse to serve on a broken credential: fail here, not on the first call.
+    _get_client().check()
 
     if args.http:
         # Stateless: the gateway in front opens a session per call; nothing outlives a request.

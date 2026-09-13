@@ -75,6 +75,10 @@ UNANALYZABLE_OK: dict[str, tuple[str, ...]] = {
     "create_user_access_token": (
         "calls _basic_auth_request(), which makes HTTP calls this extractor cannot read",
     ),
+    # GiteaClient.check() is the startup credential probe and carries its own
+    # path, so the call site has none to read. Its GET /version is exercised by
+    # the version test in the integration suite.
+    "gitea_version": ("unknown client method 'check'",),
     # The path is assembled conditionally into a local variable; both variants
     # (/repos/{owner}/{repo}/git/refs[/{ref_type}]) hand-checked against the spec.
     "list_repo_refs": ("path is a Name, not a literal",),
