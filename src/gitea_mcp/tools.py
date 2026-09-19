@@ -2832,6 +2832,9 @@ def list_package_files(
 
 # ── Admin ────────────────────────────────────────────────────────────────────
 
+_BadgeSlugs = Annotated[list[str], Field(description="Badge SLUGS (the badge's short string key, e.g. ['contributor', 'early-adopter']) — NOT badge IDs or display names. Gitea wraps them in a {'badge_slugs': [...]} body; pass the bare list here. Existing slugs for a user come from admin_list_user_badges.")]
+_WorkflowStatusFilter = Annotated[Literal["pending", "queued", "in_progress", "failure", "success", "skipped"] | None, Field(description="Filter by run/job status. Omit for every status.")]
+
 
 @_op(gitea_admin_read)
 def admin_list_users():
@@ -3006,6 +3009,142 @@ def admin_search_emails(
 ):
     """Search emails (admin only)."""
     return _ok(_get_client().paginate("/admin/emails/search", params={"q": query}))
+
+@_op(gitea_admin_read)
+def admin_list_hooks(
+    type: Annotated[Literal["system", "default", "all"] | None, Field(description="Which instance-level webhooks to list. 'system' (server default) = hooks that fire for every repository; 'default' = the template hooks copied into each newly created repository; 'all' = both kinds.")] = None,
+):
+    """List the instance's system webhooks (admin only).
+
+    These are server-wide hooks configured in site administration, not the
+    per-repo hooks of list_repo_webhooks or the per-org ones of
+    list_org_webhooks."""
+    params = _body(locals())
+    return _ok(_get_client().paginate("/admin/hooks", params=params or None))
+
+@_op(gitea_admin_write)
+def admin_create_hook(
+    config: _HookConfig,
+    events: _HookEvents,
+    hook_type: _HookType = "gitea",
+    active: bool = True,
+    name: Annotated[str | None, Field(description="Human-readable label for the hook, shown in site administration. Free text; Gitea generates one when omitted.")] = None,
+    branch_filter: Annotated[str | None, Field(description="Glob matched against the pushed branch name — only matching branches deliver (e.g. 'main', 'release/*', '*'). Omitted = every branch.")] = None,
+    authorization_header: Annotated[str | None, Field(description="Verbatim value Gitea sends as the request's Authorization header (e.g. 'Bearer abc123'). Omit unless the receiver requires one.")] = None,
+):
+    """Create a system webhook that fires for every repository (admin only)."""
+    return _call("POST", "/admin/hooks", locals(), rename={"hook_type": "type"})
+
+@_op(gitea_admin_read)
+def admin_get_hook(
+    hook_id: Annotated[int, Field(description="System webhook ID (int64) from admin_list_hooks.")],
+):
+    """Get one system webhook by ID (admin only)."""
+    return _ok(_get_client().get(f"/admin/hooks/{hook_id}"))
+
+@_op(gitea_admin_write)
+def admin_edit_hook(
+    hook_id: Annotated[int, Field(description="System webhook ID (int64) from admin_list_hooks.")],
+    config: _HookConfigPatch = None,
+    events: _HookEventsPatch = None,
+    active: bool | None = None,
+    name: Annotated[str | None, Field(description="Replacement human-readable label for the hook.")] = None,
+    branch_filter: Annotated[str | None, Field(description="Replacement branch glob (e.g. 'main', 'release/*', '*').")] = None,
+    authorization_header: Annotated[str | None, Field(description="Replacement Authorization header value Gitea sends with each delivery (e.g. 'Bearer abc123').")] = None,
+):
+    """Update a system webhook (admin only). The hook's type cannot be changed."""
+    return _call("PATCH", "/admin/hooks/{hook_id}", locals())
+
+@_op(gitea_admin_write)
+def admin_delete_hook(
+    hook_id: Annotated[int, Field(description="System webhook ID (int64) from admin_list_hooks.")],
+):
+    """Delete a system webhook (admin only)."""
+    return _ok(_get_client().delete(f"/admin/hooks/{hook_id}"))
+
+@_op(gitea_admin_read)
+def admin_list_user_badges(username: str):
+    """List the badges granted to a user (admin only)."""
+    return _ok(_get_client().get(f"/admin/users/{username}/badges"))
+
+@_op(gitea_admin_write)
+def admin_add_user_badges(
+    username: str,
+    badge_slugs: _BadgeSlugs,
+):
+    """Grant badges to a user (admin only)."""
+    return _ok(
+        _get_client().post(
+            f"/admin/users/{username}/badges",
+            json={"badge_slugs": badge_slugs},
+        )
+    )
+
+@_op(gitea_admin_write)
+def admin_delete_user_badges(
+    username: str,
+    badge_slugs: _BadgeSlugs,
+):
+    """Revoke badges from a user (admin only).
+
+    Unlinks the badges from the user; the badge definitions themselves stay
+    on the instance. Gitea takes the list in a request body, not the query."""
+    return _ok(
+        _get_client()._json(
+            "DELETE",
+            f"/admin/users/{username}/badges",
+            json={"badge_slugs": badge_slugs},
+        )
+    )
+
+@_op(gitea_admin_write)
+def admin_update_runner(
+    runner_id: Annotated[int, Field(description="Global action-runner ID (int64) from list_admin_runners.")],
+    disabled: Annotated[bool, Field(description="True = stop scheduling jobs onto this runner (it stays registered); False = re-enable it. Required — Gitea rejects a body without it.")],
+):
+    """Enable or disable a global action runner (admin only)."""
+    return _call("PATCH", "/admin/actions/runners/{runner_id}", locals())
+
+@_op(gitea_admin_read)
+def admin_list_workflow_runs(
+    event: Annotated[str | None, Field(description="Filter by the event that triggered the run, as named in the workflow's `on:` block (e.g. 'push', 'pull_request', 'workflow_dispatch', 'schedule').")] = None,
+    branch: Annotated[str | None, Field(description="Filter by the run's head branch name (no 'refs/heads/' prefix), e.g. 'main'.")] = None,
+    status: _WorkflowStatusFilter = None,
+    actor: Annotated[str | None, Field(description="Filter by the USERNAME that triggered the run (not a display name or user ID).")] = None,
+    head_sha: Annotated[str | None, Field(description="Filter by the full 40-character commit SHA the run was triggered on.")] = None,
+    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = 20,
+    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-run objects.")] = True,
+):
+    """List workflow runs across every repository on the instance (admin only).
+
+    brief (default True): compact view — id, title, status, conclusion,
+    event, branch, sha, run_number, path, timestamps.
+    Set brief=False for full Gitea API response objects."""
+    params = _body(locals(), exclude=("brief",))
+    data = _get_client().get("/admin/actions/runs", params=params or None)
+    if brief:
+        data = _slim_workflow_runs(data)
+    return _ok(data)
+
+@_op(gitea_admin_read)
+def admin_list_workflow_jobs(
+    status: _WorkflowStatusFilter = None,
+    sort: Annotated[Literal["id"] | None, Field(description="Sort field. 'id' is the only value Gitea supports here, and is also the default.")] = None,
+    order: Annotated[Literal["asc", "desc"] | None, Field(description="Sort direction. Defaults to 'asc' — pass 'desc' for the most recent jobs first.")] = None,
+    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = 20,
+    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-job objects.")] = True,
+):
+    """List workflow jobs across every repository on the instance (admin only).
+
+    brief (default True): compact view — id, name, status, conclusion,
+    run_id, runner, timestamps. Set brief=False for full Gitea objects."""
+    params = _body(locals(), exclude=("brief",))
+    data = _get_client().get("/admin/actions/jobs", params=params or None)
+    if brief:
+        data = _slim_jobs(data)
+    return _ok(data)
 
 # ── Actions Runners ──────────────────────────────────────────────────────
 
