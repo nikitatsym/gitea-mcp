@@ -147,6 +147,7 @@ _CLIENT_VERBS = {
     "get": "GET",
     "get_text": "GET",
     "get_bytes": "GET",
+    "download": "GET",
     "paginate": "GET",
     "post": "POST",
     "post_text": "POST",

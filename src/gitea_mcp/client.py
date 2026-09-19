@@ -128,6 +128,17 @@ class GiteaClient:
         """Raw response body, for endpoints that produce binary (media files)."""
         return self._bytes("GET", path, params=params)
 
+    def download(self, path: str, params: dict | None = None) -> bytes:
+        """GET a file the API serves via redirect, returning the bytes it lands on.
+
+        Redirects are off everywhere else on purpose: httpx strips the
+        Authorization header on a cross-origin hop, so a silently
+        unauthenticated retry would look like an empty result. The endpoints
+        that need this hand out a short-lived signed URL whose signature IS the
+        credential, which is why dropping the header there is correct.
+        """
+        return self._bytes("GET", path, params=params, follow_redirects=True)
+
     def post_text(self, path: str, content: str, content_type: str) -> str:
         """POST a raw (non-JSON) request body; used by the markdown/markup renderers."""
         return self._text(
