@@ -2804,6 +2804,37 @@ def delete_issue_comment_attachment(
 # ── Reactions ────────────────────────────────────────────────────────────────
 
 
+# Issue-authoring metadata (issue_config / issue_templates) lives here: of the
+# sections in this slice it is the one inside the issue cluster of the file,
+# directly after Issue Extended. Notifications/Wiki would be a worse fit.
+
+@_op(gitea_read)
+def get_repo_issue_config(owner: str, repo: str):
+    """Get a repository's issue config.
+
+    This is the parsed .gitea/ISSUE_TEMPLATE/config.yaml: blank_issues_enabled
+    (whether the 'open a blank issue' escape hatch is offered) and the
+    contact_links shown on the new-issue chooser page."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/issue_config"))
+
+@_op(gitea_read)
+def validate_repo_issue_config(owner: str, repo: str):
+    """Validate a repository's issue config.
+
+    Returns {'valid': bool, 'message': str}. Use it after committing a
+    .gitea/ISSUE_TEMPLATE/config.yaml change — get_repo_issue_config returns
+    defaults for a broken config rather than reporting the error."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/issue_config/validate"))
+
+@_op(gitea_read)
+def list_repo_issue_templates(owner: str, repo: str):
+    """List the issue templates a repository offers (e.g. .gitea/ISSUE_TEMPLATE/*).
+
+    Each entry carries name, about, file_name and ref, plus either `content`
+    (a markdown template body) or `body` (issue-form field definitions), and
+    any default title/labels/assignees. Not paginated."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/issue_templates"))
+
 @_op(gitea_read)
 def list_issue_reactions(owner: str, repo: str, index: int):
     """List reactions on an issue."""
@@ -2922,6 +2953,55 @@ def stop_stopwatch(owner: str, repo: str, index: int):
     return _ok(
         _get_client().post(f"/repos/{owner}/{repo}/issues/{index}/stopwatch/stop")
     )
+
+_TrackedTimeSince = Annotated[str | None, Field(description="ISO-8601 timestamp, e.g. '2026-05-20T00:00:00Z'. Only entries updated AFTER this time are returned.")]
+_TrackedTimeBefore = Annotated[str | None, Field(description="ISO-8601 timestamp, e.g. '2026-05-20T00:00:00Z'. Only entries updated BEFORE this time are returned.")]
+
+@_op(gitea_read)
+def list_repo_tracked_times(
+    owner: str,
+    repo: str,
+    user: Annotated[str | None, Field(description="USERNAME to filter by (NOT a user ID / display name). Querying someone else's times needs issue-write rights on the repo or site admin; without them the call is restricted to your own entries.")] = None,
+    since: _TrackedTimeSince = None,
+    before: _TrackedTimeBefore = None,
+):
+    """List tracked times across every issue in a repository.
+
+    Returns 400 if the repository has time tracking disabled."""
+    params = _body(locals(), exclude=("owner", "repo"))
+    return _ok(
+        _get_client().paginate(f"/repos/{owner}/{repo}/times", params=params or None)
+    )
+
+@_op(gitea_read)
+def list_repo_user_tracked_times(
+    owner: str,
+    repo: str,
+    user: Annotated[str, Field(description="USERNAME whose tracked times to list (NOT a user ID / display name).")],
+):
+    """List one user's tracked times in a repository.
+
+    Deprecated in the Gitea API: prefer list_repo_tracked_times with `user`,
+    which also supports since/before and pagination. This endpoint takes no
+    filters and returns every matching entry in one response."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/times/{user}"))
+
+@_op(gitea_read)
+def list_my_tracked_times(
+    since: _TrackedTimeSince = None,
+    before: _TrackedTimeBefore = None,
+):
+    """List the current user's tracked times across all repositories."""
+    params = _body(locals())
+    return _ok(_get_client().paginate("/user/times", params=params or None))
+
+@_op(gitea_read)
+def list_my_stopwatches():
+    """List the current user's stopwatches (issues with time tracking running now).
+
+    Each entry gives the repo owner/name, issue index and title, elapsed
+    seconds, and a human-readable duration. Stop one with stop_stopwatch."""
+    return _ok(_get_client().paginate("/user/stopwatches"))
 
 # ── Pull Requests ────────────────────────────────────────────────────────────
 
@@ -4751,6 +4831,79 @@ def create_org_runner_token(org: str):
 # ── Actions - Org Secrets/Variables ──────────────────────────────────────
 
 
+# Owner-scoped Actions listings (jobs/runs) and runner edits live alongside
+# the org-level secrets/variables: same `/orgs/{org}/actions/*` prefix, same
+# org-admin permission boundary.
+
+# `status` is one of Gitea's GitHub-compatible aliases; several collapse onto
+# the same internal state (pending/waiting/requested/action_required, and
+# skipped/neutral, and cancelled/timed_out), and `completed` matches every
+# finished state. Anything else is rejected with 400.
+_ActionStatusFilter = Annotated[
+    Literal[
+        "pending", "waiting", "requested", "action_required", "queued",
+        "in_progress", "completed", "failure", "success", "skipped",
+        "neutral", "cancelled", "timed_out",
+    ] | None,
+    Field(description="Filter by run/job status. 'completed' matches success, failure, skipped and cancelled together. Omit for all statuses."),
+]
+_ActionRunEvent = Annotated[str | None, Field(description="Triggering webhook event name, e.g. 'push', 'pull_request', 'workflow_dispatch', 'schedule'.")]
+_ActionRunBranch = Annotated[str | None, Field(description="Branch name the run was triggered on (bare name, e.g. 'main' — NOT 'refs/heads/main').")]
+_ActionRunActor = Annotated[str | None, Field(description="USERNAME that triggered the run (NOT a user ID / display name). Unknown usernames yield an empty result.")]
+_ActionRunHeadSha = Annotated[str | None, Field(description="Full commit SHA the run was triggered on.")]
+_ActionPage = Annotated[int | None, Field(description="1-based page number.")]
+_ActionLimit = Annotated[int | None, Field(description="Page size. Server default if omitted.")]
+_ActionRunsBrief = Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-run objects.")]
+_ActionRunnerDisabled = Annotated[bool, Field(description="True = take the runner out of service (it stops picking up jobs); False = re-enable it. Required — this is the only editable runner field.")]
+
+@_op(gitea_read)
+def list_org_workflow_jobs(
+    org: str,
+    status: _ActionStatusFilter = None,
+    limit: _ActionLimit = 20,
+    page: _ActionPage = 1,
+):
+    """List workflow jobs across every repository in an organization.
+
+    Compact view — id, name, status, conclusion, run_id, timestamps, per-step
+    status. Only jobs in repos whose actions you may read are returned, so a
+    bare org member can see fewer jobs than an org admin."""
+    params = _body(locals(), exclude=("org",))
+    return _ok(_slim_jobs(_get_client().get(f"/orgs/{org}/actions/jobs", params=params)))
+
+@_op(gitea_read)
+def list_org_workflow_runs(
+    org: str,
+    event: _ActionRunEvent = None,
+    branch: _ActionRunBranch = None,
+    status: _ActionStatusFilter = None,
+    actor: _ActionRunActor = None,
+    head_sha: _ActionRunHeadSha = None,
+    limit: _ActionLimit = 20,
+    page: _ActionPage = 1,
+    brief: _ActionRunsBrief = True,
+):
+    """List workflow runs across every repository in an organization.
+
+    brief (default True): compact view — id, title, status, conclusion,
+    event, branch, sha, run_number, path, timestamps.
+    Set brief=False for full Gitea API response objects. Only runs in repos
+    whose actions you may read are returned."""
+    params = _body(locals(), exclude=("org", "brief"))
+    data = _get_client().get(f"/orgs/{org}/actions/runs", params=params)
+    if brief:
+        data = _slim_workflow_runs(data)
+    return _ok(data)
+
+@_op(gitea_write)
+def update_org_runner(
+    org: str,
+    runner_id: Annotated[int, Field(description="Runner ID from list_org_runners (NOT the runner name).")],
+    disabled: _ActionRunnerDisabled,
+):
+    """Enable or disable an org-level action runner."""
+    return _call("PATCH", "/orgs/{org}/actions/runners/{runner_id}", locals())
+
 @_op(gitea_read)
 def list_org_action_secrets(org: str):
     """List action secrets for an organization."""
@@ -4819,8 +4972,61 @@ def delete_org_action_variable(org: str, variable_name: str):
     return _ok(_get_client().delete(f"/orgs/{org}/actions/variables/{variable_name}"))
 
 # ── Actions - User Secrets/Variables ─────────────────────────────────────
-# No list op: Gitea exposes GET on org and repo secrets but not on user ones.
+# No user-secret list op: Gitea exposes GET on org and repo secrets but not on
+# user ones (there is no `/user/actions/secrets` collection endpoint at all).
+# User variables, jobs and runs below do have list ops.
 
+
+# Account-scoped Actions listings (jobs/runs) and runner edits live alongside
+# the user-level secrets/variables: same `/user/actions/*` prefix, same
+# "acts as the authenticated user" scope.
+
+@_op(gitea_read)
+def list_user_workflow_jobs(
+    status: _ActionStatusFilter = None,
+    limit: _ActionLimit = 20,
+    page: _ActionPage = 1,
+    sort: Annotated[Literal["id"] | None, Field(description="Attribute to sort by. Gitea supports only 'id' (the default).")] = None,
+    order: Annotated[Literal["asc", "desc"] | None, Field(description="Sort direction. Default 'asc'; pass 'desc' for newest jobs first.")] = None,
+):
+    """List workflow jobs across every repository the current user owns.
+
+    Compact view — id, name, status, conclusion, run_id, timestamps, per-step
+    status. Covers the user's own repos, not repos owned by orgs they belong
+    to — use list_org_workflow_jobs for those."""
+    params = _body(locals())
+    return _ok(_slim_jobs(_get_client().get("/user/actions/jobs", params=params)))
+
+@_op(gitea_read)
+def list_user_workflow_runs(
+    event: _ActionRunEvent = None,
+    branch: _ActionRunBranch = None,
+    status: _ActionStatusFilter = None,
+    actor: _ActionRunActor = None,
+    head_sha: _ActionRunHeadSha = None,
+    limit: _ActionLimit = 20,
+    page: _ActionPage = 1,
+    brief: _ActionRunsBrief = True,
+):
+    """List workflow runs across every repository the current user owns.
+
+    brief (default True): compact view — id, title, status, conclusion,
+    event, branch, sha, run_number, path, timestamps.
+    Set brief=False for full Gitea API response objects. Covers the user's
+    own repos, not org-owned ones — use list_org_workflow_runs for those."""
+    params = _body(locals(), exclude=("brief",))
+    data = _get_client().get("/user/actions/runs", params=params)
+    if brief:
+        data = _slim_workflow_runs(data)
+    return _ok(data)
+
+@_op(gitea_write)
+def update_user_runner(
+    runner_id: Annotated[int, Field(description="Runner ID from list_user_runners (NOT the runner name).")],
+    disabled: _ActionRunnerDisabled,
+):
+    """Enable or disable a user-level action runner."""
+    return _call("PATCH", "/user/actions/runners/{runner_id}", locals())
 
 @_op(gitea_write)
 def create_user_action_secret(
