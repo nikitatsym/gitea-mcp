@@ -68,20 +68,6 @@ UNANALYZABLE_OK: dict[str, tuple[str, ...]] = {
     # still checked; the four field names are hand-checked against CreateHookOption.
     "create_org_webhook": ("payload is a Call, not a readable dict",),
     "create_repo_webhook": ("payload is a Call, not a readable dict",),
-    # POST /users/{username}/tokens goes through _basic_auth_request (raw
-    # basic-auth httpx), because the endpoint refuses token auth; its names are
-    # hand-checked against CreateAccessTokenOption. The op's GET /user is read
-    # and checked as usual.
-    "create_user_access_token": (
-        "calls _basic_auth_request(), which makes HTTP calls this extractor cannot read",
-    ),
-    # GiteaClient.check() is the startup credential probe and carries its own
-    # path, so the call site has none to read. Its GET /version is exercised by
-    # the version test in the integration suite.
-    "gitea_version": ("unknown client method 'check'",),
-    # The path is assembled conditionally into a local variable; both variants
-    # (/repos/{owner}/{repo}/git/refs[/{ref_type}]) hand-checked against the spec.
-    "list_repo_refs": ("path is a Name, not a literal",),
     # The blocking waiters poll through asyncio.to_thread(_fetch_*), so their
     # requests are made by a helper this extractor cannot read. Those helpers hit
     # the same endpoints get_workflow_run / get_workflow_job /
@@ -299,6 +285,9 @@ class _OpExtractor:
             elif _is_named(fn, "_call"):
                 called.add(id(fn))
                 call = self._from_call_helper(node)
+            elif _is_named(fn, "_basic_auth_request"):
+                called.add(id(fn))
+                call = self._from_basic_auth(node)
             elif isinstance(fn, ast.Attribute):
                 self._check_attribute(fn)
             elif isinstance(fn, ast.Name):
@@ -587,6 +576,29 @@ class _OpExtractor:
         if method in ("GET", "DELETE"):
             return _WireCall(method, path, names, frozenset())
         return _WireCall(method, path, frozenset(), names)
+
+    def _from_basic_auth(self, node: ast.Call) -> _WireCall | None:
+        """`_basic_auth_request(method, path, user, password, json=...)`.
+
+        It bypasses the client because its endpoint refuses token auth, but the
+        method, path, and body are as literal as any other call - reading them
+        here keeps the endpoint inside every check this module makes.
+        """
+        if len(node.args) < 2:
+            self._block("_basic_auth_request() is not shaped (method, path, ...)")
+            return None
+        mark = len(self.reasons)
+        method = self._const_str(node.args[0]).upper()
+        path = self._path(node.args[1])
+        if self._unreadable_since(mark):
+            return None
+        body: set[str] = set()
+        for kw in node.keywords:
+            if kw.arg == "json":
+                body |= self._payload_names(kw.value)
+            else:
+                self._block(f"_basic_auth_request() carries a payload in {kw.arg!r}")
+        return _WireCall(method, path, frozenset(), frozenset(body))
 
     def _from_client(self, node: ast.Call, verb: str) -> _WireCall | None:
         args = list(node.args)
@@ -1132,4 +1144,32 @@ def test_wire_calls_match_swagger(swagger: _Swagger) -> None:
         f"{len(findings)} call(s) disagree with the Gitea spec. Gitea drops "
         "unknown names silently, so each of these is a request that quietly "
         "does not do what it says:\n" + "\n".join(f"  {f}" for f in findings)
+    )
+
+
+def _endpoints_reached(swagger: _Swagger) -> set[tuple[str, str]]:
+    """Spec (path, method) pairs some op actually calls."""
+    return {
+        (path, call.method)
+        for _, call in _checked_calls()
+        for path in swagger.candidates(call.path, call.method)
+    }
+
+
+def test_every_spec_endpoint_has_an_operation(swagger: _Swagger) -> None:
+    """The other direction of this module: spec -> code, not code -> spec.
+
+    Every other test here iterates the calls read off `tools.py` and looks each
+    one up in the spec, so an endpoint no op calls is not in the iteration at
+    all. That is how avatars and attachments sat uncovered while the suite was
+    green and the README claimed full coverage.
+
+    There is deliberately no allowlist. An endpoint is covered by writing the
+    op, not by naming the endpoint here.
+    """
+    uncovered = sorted(set(swagger.endpoints) - _endpoints_reached(swagger))
+    assert not uncovered, (
+        f"{len(uncovered)} of {len(swagger.endpoints)} spec endpoints have no "
+        "operation. Each is a piece of the Gitea API agents cannot reach:\n"
+        + "\n".join(f"  {method} {path}" for path, method in uncovered)
     )

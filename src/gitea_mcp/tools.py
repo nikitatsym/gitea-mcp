@@ -207,7 +207,7 @@ _BpStatusCheckContexts = Annotated[list[str] | None, Field(description="Required
 @_op(ROOT)
 def gitea_version():
     """Get the Gitea MCP server version and service version."""
-    return {"mcp": _pkg_version("gitea-mcp"), "service": _get_client().check()}
+    return {"mcp": _pkg_version("gitea-mcp"), "service": _get_client().get("/version")}
 
 @_op(gitea_read)
 def get_current_user():
@@ -3099,10 +3099,10 @@ def list_repo_refs(
     ref_type: Annotated[Literal["", "heads", "tags"], Field(description="Filter: '' (default) lists all refs, 'heads' lists branches, 'tags' lists tags.")] = "",
 ):
     """List git references in a repository. ref_type can be empty, 'heads', or 'tags'."""
-    path = f"/repos/{owner}/{repo}/git/refs"
+    client = _get_client()
     if ref_type:
-        path = f"{path}/{ref_type}"
-    return _ok(_get_client().get(path))
+        return _ok(client.get(f"/repos/{owner}/{repo}/git/refs/{ref_type}"))
+    return _ok(client.get(f"/repos/{owner}/{repo}/git/refs"))
 
 @_op(gitea_read)
 def get_git_tree(
