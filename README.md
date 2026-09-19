@@ -1,10 +1,9 @@
 # gitea-mcp
 
-MCP server for Gitea -- full API coverage for autonomous AI agents.
+MCP server for Gitea, built for autonomous AI agents.
 
 ## Features
 
-- **~290 operations** covering the entire Gitea API surface
 - Repositories, issues, pull requests, releases, labels, milestones
 - File content management (create, read, update, delete)
 - Branches, tags, commits, and status checks
@@ -61,7 +60,7 @@ By default, creating public repos and orgs is blocked — agents must pass `priv
 
 ## Tool Groups
 
-All ~290 operations are exposed through 6 risk-graded meta-tools — one tool surface per scope, dispatched via `operation` + `params`. Aligned with the v2 MCP spec so agents pick a tool by the kind of side effect, not the HTTP verb.
+Operations are exposed through 6 risk-graded meta-tools — one tool surface per scope, dispatched via `operation` + `params`.
 
 | Meta-tool | Scope | Examples |
 |---|---|---|
