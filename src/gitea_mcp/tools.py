@@ -3780,6 +3780,23 @@ def get_package(
         _get_client().get(f"/packages/{owner}/{type}/{name}/{version}")
     )
 
+@_op(gitea_read)
+def get_latest_package_version(
+    owner: str,
+    type: _PackageType,
+    name: _PackageName,
+):
+    """Get the newest version of a package without knowing its version string.
+
+    The `-` in Gitea's `/packages/{owner}/{type}/{name}/-/latest` route is a
+    literal path segment of the API's grammar, not a placeholder — nothing is
+    substituted for it. Returns the same object as get_package; 404 when the
+    package has no versions.
+    """
+    return _ok(
+        _get_client().get(f"/packages/{owner}/{type}/{name}/-/latest")
+    )
+
 @_op(gitea_delete)
 def delete_package(
     owner: str,
@@ -3792,6 +3809,22 @@ def delete_package(
         _get_client().delete(f"/packages/{owner}/{type}/{name}/{version}")
     )
 
+@_op(gitea_delete)
+def delete_package_all_versions(
+    owner: str,
+    type: _PackageType,
+    name: _PackageName,
+):
+    """Delete a package and every version of it.
+
+    Wider than delete_package, which removes a single version: this drops the
+    package itself together with all its versions and files. Irreversible —
+    call list_package_versions first if the blast radius matters.
+    """
+    return _ok(
+        _get_client().delete(f"/packages/{owner}/{type}/{name}")
+    )
+
 @_op(gitea_read)
 def list_package_files(
     owner: str,
@@ -3802,6 +3835,40 @@ def list_package_files(
     """List files in a package."""
     return _ok(
         _get_client().get(f"/packages/{owner}/{type}/{name}/{version}/files")
+    )
+
+@_op(gitea_write)
+def link_package(
+    owner: str,
+    type: _PackageType,
+    name: _PackageName,
+    repo_name: Annotated[str, Field(description="Repository SHORT name (e.g. 'my-repo', NOT 'owner/my-repo'). Gitea resolves it under `owner`, so a repository owned by anyone else is a 404.")],
+):
+    """Link a package to a repository so it appears on that repo's packages tab.
+
+    The link lives on the package, not on a version, so it covers every
+    version at once. A package carries at most one link; calling this again
+    repoints it. Takes no request body.
+    """
+    return _ok(
+        _get_client().post(f"/packages/{owner}/{type}/{name}/-/link/{repo_name}")
+    )
+
+@_op(gitea_write)
+def unlink_package(
+    owner: str,
+    type: _PackageType,
+    name: _PackageName,
+):
+    """Remove a package's repository link, leaving the package itself intact.
+
+    Reverses link_package. No repository is named because a package carries at
+    most one link. The `-` in `/packages/{owner}/{type}/{name}/-/unlink` is a
+    literal path segment, not a placeholder. Takes no request body and deletes
+    no package data.
+    """
+    return _ok(
+        _get_client().post(f"/packages/{owner}/{type}/{name}/-/unlink")
     )
 
 # ── Admin ────────────────────────────────────────────────────────────────────
