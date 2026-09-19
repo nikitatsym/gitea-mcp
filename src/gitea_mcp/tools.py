@@ -651,6 +651,39 @@ def create_repo(
     private = _enforce_private(private)
     return _call("POST", "/user/repos", locals())
 
+@_op(gitea_execute)
+def migrate_repo(
+    clone_addr: Annotated[str, Field(description="URL of the SOURCE repository to import from, e.g. 'https://github.com/owner/name.git', 'https://gitlab.com/owner/name' or 'git@host:owner/name.git'. This is the remote being read — not the repo being created here.")],
+    repo_name: Annotated[str, Field(description="Name of the NEW repository created on this Gitea instance — the slug only (e.g. 'name'), not 'owner/name'.")],
+    repo_owner: Annotated[str | None, Field(description="Username or organization login that will own the new repo. Defaults to the authenticated user.")] = None,
+    service: Annotated[Literal["git", "github", "gitea", "gitlab", "gogs", "onedev", "gitbucket", "codebase", "codecommit"] | None, Field(description="Type of the source service. 'git' (the default) is a plain git clone: ONLY commits/branches/tags are copied and the issues/labels/milestones/pull_requests/releases flags below are ignored. Any other value makes Gitea talk to that service's API, which is what enables importing those non-git units.")] = None,
+    auth_token: Annotated[str | None, Field(description="Personal access token for the SOURCE service, used for its API and for private source repos. Required whenever service is not 'git' and you ask for issues/labels/milestones/pull_requests/releases. Use this instead of auth_username/auth_password when the source supports tokens.")] = None,
+    auth_username: Annotated[str | None, Field(description="Username for HTTP basic auth against the source repo — use with auth_password when the source has no token auth.")] = None,
+    auth_password: Annotated[str | None, Field(description="Password or app-password paired with auth_username for HTTP basic auth against the source repo.")] = None,
+    aws_access_key_id: Annotated[str | None, Field(description="AWS access key id — only for service='codecommit'.")] = None,
+    aws_secret_access_key: Annotated[str | None, Field(description="AWS secret access key — only for service='codecommit'.")] = None,
+    mirror: Annotated[bool | None, Field(description="True = keep the new repo as a PULL MIRROR that keeps re-fetching from clone_addr; False/omitted = one-off import with no ongoing link to the source.")] = None,
+    mirror_interval: Annotated[str | None, Field(description="Go duration between automatic mirror syncs, e.g. '8h0m0s'. Only meaningful with mirror=True; '0' disables scheduled syncing (sync manually with SyncRepoMirror).")] = None,
+    lfs: Annotated[bool | None, Field(description="True = also fetch Git LFS objects from the source.")] = None,
+    lfs_endpoint: Annotated[str | None, Field(description="LFS server URL to fetch objects from, when the source's LFS lives elsewhere than clone_addr.")] = None,
+    private: Annotated[bool | None, Field(description="True = create the migrated repo as private.")] = None,
+    description: str | None = None,
+    issues: Annotated[bool | None, Field(description="True = also import the source repo's ISSUES (with their comments). Needs service != 'git' and credentials that can read issues there; silently ignored for service='git'.")] = None,
+    labels: Annotated[bool | None, Field(description="True = also import the source repo's LABELS. Needs service != 'git'; ignored otherwise.")] = None,
+    milestones: Annotated[bool | None, Field(description="True = also import the source repo's MILESTONES. Needs service != 'git'; ignored otherwise.")] = None,
+    pull_requests: Annotated[bool | None, Field(description="True = also import the source repo's PULL REQUESTS (with their review comments). Needs service != 'git'; ignored otherwise.")] = None,
+    releases: Annotated[bool | None, Field(description="True = also import the source repo's RELEASES and their uploaded attachments. Needs service != 'git'; ignored otherwise.")] = None,
+    wiki: Annotated[bool | None, Field(description="True = also import the source repo's WIKI (a separate git repository on the source). Needs the source to expose a wiki; ignored for plain 'git' clones without one.")] = None,
+):
+    """Migrate (import) a remote repository into this Gitea instance.
+
+    Starts a real import: Gitea clones `clone_addr` and, for a non-'git'
+    `service`, calls that service's API for the units enabled below. For big
+    repos the request can take a long time and the repo appears part-filled
+    while it runs. The response is the newly created Repository object."""
+    private = _enforce_private(private)
+    return _call("POST", "/repos/migrate", locals())
+
 @_op(gitea_read)
 def get_repo(owner: str, repo: str):
     """Get a repository by owner and name."""
@@ -773,6 +806,11 @@ def list_my_starred_repos(
         data = _slim_repos(data)
     return _ok(data)
 
+@_op(gitea_read)
+def list_repo_stargazers(owner: str, repo: str):
+    """List the users who starred a repository."""
+    return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/stargazers"))
+
 @_op(gitea_write)
 def add_repo_topic(owner: str, repo: str, topic: str):
     """Add a topic to a repository."""
@@ -811,6 +849,15 @@ def unwatch_repo(owner: str, repo: str):
     return _ok(_get_client().delete(f"/repos/{owner}/{repo}/subscription"))
 
 @_op(gitea_read)
+def check_repo_subscription(owner: str, repo: str):
+    """Check whether the CURRENT user is watching a repository.
+
+    Returns the watch info (subscribed, ignored, reason, created_at) when the
+    user watches it; Gitea answers 404 (raised as an error) when they do not.
+    This is the per-repo check — ListMySubscriptions lists every watched repo."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/subscription"))
+
+@_op(gitea_read)
 def list_repo_teams(owner: str, repo: str):
     """List teams that have access to a repository."""
     return _ok(_get_client().get(f"/repos/{owner}/{repo}/teams"))
@@ -834,6 +881,154 @@ def get_repo_collaborator_permission(
             f"/repos/{owner}/{repo}/collaborators/{collaborator}/permission"
         )
     )
+
+@_op(gitea_write)
+def update_repo_avatar(
+    owner: str,
+    repo: str,
+    image: Annotated[str, Field(description="Base64-encoded image file content (PNG/JPEG/GIF), NOT a URL and NOT a file path. Sent as a JSON body field — this endpoint is not a multipart upload.")],
+):
+    """Set a repository's avatar from a base64-encoded image."""
+    return _call("POST", "/repos/{owner}/{repo}/avatar", locals())
+
+@_op(gitea_delete)
+def delete_repo_avatar(owner: str, repo: str):
+    """Clear a repository's avatar, reverting it to the generated default."""
+    return _ok(_get_client().delete(f"/repos/{owner}/{repo}/avatar"))
+
+@_op(gitea_read)
+def get_repo_licenses(owner: str, repo: str):
+    """List the license names Gitea detected in a repository's files.
+
+    Returns a list of SPDX-ish license names (e.g. ['MIT']) detected from the
+    repo's LICENSE files — not the instance's license templates (ListLicenses)."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/licenses"))
+
+@_op(gitea_read)
+def check_new_issue_pins_allowed(owner: str, repo: str):
+    """Check whether new issue/PR pins are still allowed in a repository.
+
+    Returns {'issues': bool, 'pull_requests': bool} — False means the repo hit
+    Gitea's pin limit and PinIssue would fail for that kind."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/new_pin_allowed"))
+
+@_op(gitea_read)
+def get_repo_signing_key(owner: str, repo: str):
+    """Get the GPG public key Gitea signs this repository's commits with.
+
+    Returns ASCII-armored key text ('-----BEGIN PGP PUBLIC KEY BLOCK-----'),
+    or an empty string when the instance has no GPG signing key for the repo."""
+    return _get_client().get_text(f"/repos/{owner}/{repo}/signing-key.gpg")
+
+@_op(gitea_read)
+def get_repo_signing_key_ssh(owner: str, repo: str):
+    """Get the SSH public key Gitea signs this repository's commits with.
+
+    Returns one OpenSSH public-key line (e.g. 'ssh-ed25519 AAAA... gitea'), or
+    an empty string when the instance signs with GPG instead of SSH."""
+    return _get_client().get_text(f"/repos/{owner}/{repo}/signing-key.pub")
+
+@_op(gitea_read)
+def list_repo_push_mirrors(owner: str, repo: str):
+    """List a repository's push mirrors — the remotes Gitea pushes this repo to.
+
+    Each entry carries remote_name (the handle other push-mirror ops take),
+    remote_address, interval, sync_on_commit, last_update and last_error."""
+    return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/push_mirrors"))
+
+@_op(gitea_read)
+def get_repo_push_mirror(
+    owner: str,
+    repo: str,
+    name: Annotated[str, Field(description="Remote name of the push mirror — the `remote_name` field from ListRepoPushMirrors (a git remote handle like 'mirror-1'), NOT the remote URL.")],
+):
+    """Get one push mirror of a repository by its remote name."""
+    return _call("GET", "/repos/{owner}/{repo}/push_mirrors/{name}", locals())
+
+@_op(gitea_write)
+def add_repo_push_mirror(
+    owner: str,
+    repo: str,
+    remote_address: Annotated[str, Field(description="URL of the DESTINATION repository Gitea should push to, e.g. 'https://github.com/owner/name.git'. Gitea derives the mirror's remote_name itself.")],
+    remote_username: Annotated[str | None, Field(description="Username for authenticating against the destination remote.")] = None,
+    remote_password: Annotated[str | None, Field(description="Password or access token paired with remote_username for the destination remote.")] = None,
+    interval: Annotated[str | None, Field(description="Go duration between automatic pushes, e.g. '8h0m0s'. '0' disables scheduled pushing, leaving SyncRepoPushMirrors / sync_on_commit as the triggers.")] = None,
+    sync_on_commit: Annotated[bool | None, Field(description="True = push to the mirror on every new commit, in addition to the `interval` schedule.")] = None,
+):
+    """Add a push mirror: a remote this repository is continuously pushed to."""
+    return _call("POST", "/repos/{owner}/{repo}/push_mirrors", locals())
+
+@_op(gitea_delete)
+def delete_repo_push_mirror(
+    owner: str,
+    repo: str,
+    name: Annotated[str, Field(description="Remote name of the push mirror to remove — the `remote_name` field from ListRepoPushMirrors, NOT the remote URL.")],
+):
+    """Delete a push mirror from a repository by its remote name.
+
+    Removes the mirroring configuration only; the destination repository and
+    anything already pushed there are untouched."""
+    return _call("DELETE", "/repos/{owner}/{repo}/push_mirrors/{name}", locals())
+
+@_op(gitea_execute)
+def sync_repo_push_mirrors(owner: str, repo: str):
+    """Trigger an immediate push to ALL of a repository's push mirrors.
+
+    Pushes the current refs out to every configured remote now, instead of
+    waiting for each mirror's interval. Check last_update/last_error via
+    ListRepoPushMirrors afterwards — the sync runs in the background."""
+    return _ok(_get_client().post(f"/repos/{owner}/{repo}/push_mirrors-sync"))
+
+@_op(gitea_execute)
+def sync_repo_mirror(owner: str, repo: str):
+    """Trigger an immediate pull-mirror sync: re-fetch this repo from its source.
+
+    Only valid for a repo created as a mirror (MigrateRepo with mirror=True);
+    it overwrites local refs with the upstream's. The opposite direction from
+    SyncRepoPushMirrors, which pushes this repo out to its push mirrors."""
+    return _ok(_get_client().post(f"/repos/{owner}/{repo}/mirror-sync"))
+
+@_op(gitea_execute)
+def merge_upstream(
+    owner: str,
+    repo: str,
+    branch: Annotated[str | None, Field(description="Branch in THIS fork to update, and the same-named branch of the upstream repo to take commits from (e.g. 'main').")] = None,
+    ff_only: Annotated[bool | None, Field(description="True = refuse the sync unless the branch can fast-forward, leaving it untouched rather than creating a merge commit.")] = None,
+):
+    """Sync a fork's branch with the same branch of its upstream repository.
+
+    Writes to the branch: Gitea fast-forwards it, or merges upstream into it
+    when ff_only is not set. Returns {'merge_type': ...} saying which happened."""
+    return _call("POST", "/repos/{owner}/{repo}/merge-upstream", locals())
+
+@_op(gitea_execute)
+def accept_repo_transfer(owner: str, repo: str):
+    """Accept a pending transfer of a repository to you or your organization.
+
+    `owner`/`repo` name the repo as it is addressed TODAY (still under the old
+    owner); accepting completes TransferRepo and moves it to the new owner."""
+    return _ok(_get_client().post(f"/repos/{owner}/{repo}/transfer/accept"))
+
+@_op(gitea_execute)
+def reject_repo_transfer(owner: str, repo: str):
+    """Reject a pending transfer of a repository to you or your organization.
+
+    `owner`/`repo` name the repo as it is addressed today; rejecting cancels
+    the pending TransferRepo and leaves the repo with its current owner."""
+    return _ok(_get_client().post(f"/repos/{owner}/{repo}/transfer/reject"))
+
+@_op(gitea_read)
+def check_repo_assignee(
+    owner: str,
+    repo: str,
+    assignee: Annotated[str, Field(description="USERNAME to test (NOT a user ID / display name).")],
+):
+    """Check whether a user can be assigned to issues in a repository.
+
+    Returns {'status': 'ok'} when the user is assignable; Gitea answers 404
+    (raised as an error) when they are not. ListRepoAssignees returns the
+    whole set in one call."""
+    return _call("GET", "/repos/{owner}/{repo}/assignees/{assignee}", locals())
 
 def _hook_body(hook_type: str, config: dict, events: list, active: bool) -> dict:
     return {"type": hook_type, "config": config, "events": events, "active": active}
