@@ -444,6 +444,13 @@ def list_ssh_keys():
     """List the current user's SSH keys."""
     return _ok(_get_client().paginate("/user/keys"))
 
+@_op(gitea_read)
+def get_ssh_key(
+    key_id: Annotated[int, Field(description="Numeric key ID (int64) from the `id` field of list_ssh_keys — NOT the title and NOT the fingerprint.")],
+):
+    """Get one of the current user's SSH keys by ID."""
+    return _ok(_get_client().get(f"/user/keys/{key_id}"))
+
 @_op(gitea_write)
 def create_ssh_key(
     title: Annotated[str, Field(description="Human-readable key label.")],
@@ -458,9 +465,28 @@ def delete_ssh_key(key_id: int):
     return _ok(_get_client().delete(f"/user/keys/{key_id}"))
 
 @_op(gitea_read)
+def list_user_ssh_keys(
+    username: Annotated[str, Field(description="USERNAME of the user whose public keys to list (NOT a user ID, NOT a display name).")],
+    fingerprint: Annotated[str | None, Field(description="Optional filter: return only the key with this fingerprint, e.g. 'SHA256:qu9M...'. Omit to list every public key the user has.")] = None,
+):
+    """List another user's public SSH keys.
+
+    Public keys are world-readable in Gitea; this works for any username,
+    not just the authenticated user."""
+    params = _body(locals(), exclude=("username",))
+    return _ok(_get_client().paginate(f"/users/{username}/keys", params=params or None))
+
+@_op(gitea_read)
 def list_gpg_keys():
     """List the current user's GPG keys."""
     return _ok(_get_client().paginate("/user/gpg_keys"))
+
+@_op(gitea_read)
+def get_gpg_key(
+    key_id: Annotated[int, Field(description="Numeric key ID (int64) from the `id` field of list_gpg_keys — NOT the hex `key_id` field and NOT the fingerprint.")],
+):
+    """Get one of the current user's GPG keys by ID."""
+    return _ok(_get_client().get(f"/user/gpg_keys/{key_id}"))
 
 @_op(gitea_write)
 def create_gpg_key(
@@ -477,6 +503,49 @@ def create_gpg_key(
 def delete_gpg_key(key_id: int):
     """Delete a GPG key by ID."""
     return _ok(_get_client().delete(f"/user/gpg_keys/{key_id}"))
+
+@_op(gitea_read)
+def list_user_gpg_keys(
+    username: Annotated[str, Field(description="USERNAME of the user whose GPG keys to list (NOT a user ID, NOT a display name).")],
+):
+    """List another user's GPG keys.
+
+    GPG keys are world-readable in Gitea; this works for any username,
+    not just the authenticated user."""
+    return _ok(_get_client().paginate(f"/users/{username}/gpg_keys"))
+
+@_op(gitea_read)
+def get_gpg_key_token():
+    """Get the one-time challenge token used to prove GPG key ownership.
+
+    Returns a plain-text token string (not JSON), tied to the authenticated
+    user. Verification flow:
+
+      1. Call this op to get the token, e.g. 'gitea-abc123...'.
+      2. Sign that exact token text with the secret half of the GPG key,
+         producing an ASCII-armored *detached* signature:
+         `echo -n "<token>" | gpg --armor --detach-sign -u <KEYID>`
+         (no trailing newline — sign the token bytes verbatim).
+      3. Pass the key's hex `key_id` and the armored signature block to
+         verify_gpg_key.
+
+    The key must already be registered via create_gpg_key. Until verified,
+    Gitea reports commits signed with it as unverified."""
+    return _get_client().get_text("/user/gpg_key_token")
+
+@_op(gitea_write)
+def verify_gpg_key(
+    key_id: Annotated[str, Field(description="Hex GPG key ID from the `key_id` field of list_gpg_keys (e.g. '3E5A8B1C9D4F2601') — NOT the numeric `id` and NOT the fingerprint.")],
+    armored_signature: Annotated[str, Field(description="ASCII-armored *detached* OpenPGP signature over the exact token text returned by get_gpg_key_token. Starts with '-----BEGIN PGP SIGNATURE-----' and ends with '-----END PGP SIGNATURE-----', newlines included. Produce with: echo -n \"<token>\" | gpg --armor --detach-sign -u <key_id>.")],
+):
+    """Verify a GPG key by submitting a signature over the challenge token.
+
+    Call get_gpg_key_token first, sign that token with the key's secret
+    half, then pass the key's hex key_id plus the armored signature here.
+    On success Gitea returns the key with `verified: true` and starts
+    marking commits signed by it as verified. A signature over anything
+    other than the current token returns 422."""
+    return _call("POST", "/user/gpg_key_verify", locals())
 
 # ── Repositories ─────────────────────────────────────────────────────────────
 
