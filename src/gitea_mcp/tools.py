@@ -216,6 +216,69 @@ def get_current_user():
     """Get the currently authenticated user."""
     return _ok(_get_client().get("/user"))
 
+@_op(gitea_read)
+def get_current_access_token():
+    """Get metadata for the access token this server is authenticating with.
+
+    Returns id, name, scopes, created_at, last_used_at and the owning user —
+    the token secret itself is never echoed back. Use it to find out what the
+    configured GITEA_TOKEN is actually allowed to do before attempting a
+    write, instead of discovering the missing scope as a 403.
+    """
+    return _ok(_get_client().get("/token"))
+
+@_op(gitea_delete)
+def delete_current_access_token():
+    """Revoke the access token this server is authenticating with.
+
+    Irreversible and self-destructive: every subsequent call from this server
+    fails with 401 until GITEA_TOKEN is replaced with a fresh token. Use
+    delete_user_token-style ops to revoke someone else's token instead.
+    """
+    return _ok(_get_client().delete("/token"))
+
+@_op(gitea_read)
+def get_api_settings():
+    """Get the instance's global API settings.
+
+    Returns the paging limits this instance enforces (default_paging_num,
+    max_response_items, default_git_trees_per_page, default_max_blob_size,
+    default_max_response_size) — i.e. the real ceiling on any `limit` a list
+    op can ask for.
+    """
+    return _ok(_get_client().get("/settings/api"))
+
+@_op(gitea_read)
+def get_attachment_settings():
+    """Get the instance's global attachment settings.
+
+    Returns whether attachments are enabled at all, plus allowed_types (a
+    comma-separated MIME/extension list), max_size (MiB) and max_files —
+    check these before uploading issue or release attachments.
+    """
+    return _ok(_get_client().get("/settings/attachment"))
+
+@_op(gitea_read)
+def get_repository_settings():
+    """Get the instance's global repository settings.
+
+    Returns which repo features the admin has switched off instance-wide:
+    http_git_disabled, lfs_disabled, migrations_disabled, mirrors_disabled,
+    stars_disabled, time_tracking_disabled. A feature disabled here fails for
+    every repo regardless of per-repo configuration.
+    """
+    return _ok(_get_client().get("/settings/repository"))
+
+@_op(gitea_read)
+def get_ui_settings():
+    """Get the instance's global UI settings.
+
+    Returns default_theme, custom_emojis, and allowed_reactions — the latter
+    is the exact set of reaction strings create_issue_reaction and friends
+    will accept on this instance.
+    """
+    return _ok(_get_client().get("/settings/ui"))
+
 # ── Users ────────────────────────────────────────────────────────────────────
 
 
@@ -1492,6 +1555,37 @@ def get_combined_commit_status(owner: str, repo: str, ref: str):
     """Get the combined status for a commit ref."""
     return _ok(_get_client().get(f"/repos/{owner}/{repo}/commits/{ref}/status"))
 
+@_op(gitea_read)
+def list_ref_commit_statuses(
+    owner: str,
+    repo: str,
+    ref: Annotated[str, Field(description="Branch name, tag name, or commit SHA whose statuses should be listed. Unlike list_commit_statuses (SHA only), a branch/tag name resolves to its current HEAD.")],
+    sort: Annotated[Literal["oldest", "recentupdate", "leastupdate", "leastindex", "highestindex"] | None, Field(description="Ordering of the returned statuses. Server default if omitted.")] = None,
+    state: Annotated[Literal["pending", "success", "error", "failure", "warning"] | None, Field(description="Only return statuses in this state. Server default (all states) if omitted.")] = None,
+):
+    """List statuses for a branch, tag, or commit reference.
+
+    Every status ever posted for the ref, newest contexts included — for the
+    single rolled-up verdict use get_combined_commit_status instead."""
+    params = _body(locals(), exclude=("owner", "repo", "ref"))
+    return _ok(
+        _get_client().paginate(
+            f"/repos/{owner}/{repo}/commits/{ref}/statuses", params=params or None
+        )
+    )
+
+@_op(gitea_read)
+def get_commit_pull_request(
+    owner: str,
+    repo: str,
+    sha: Annotated[str, Field(description="Commit SHA to look up. Returns the pull request whose merge introduced this commit.")],
+):
+    """Get the merged pull request that introduced a commit.
+
+    404 when the commit did not arrive through a merged PR (direct push, or
+    a PR still open)."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/commits/{sha}/pull"))
+
 # ── Tags and Releases ───────────────────────────────────────────────────────
 
 
@@ -1615,6 +1709,35 @@ def edit_repo_label(
 def delete_repo_label(owner: str, repo: str, label_id: int):
     """Delete a repository label."""
     return _call("DELETE", "/repos/{owner}/{repo}/labels/{label_id}", locals())
+
+@_op(gitea_read)
+def get_repo_label(
+    owner: str,
+    repo: str,
+    label_id: Annotated[int, Field(description="Label ID (int64) from list_repo_labels — NOT the label name.")],
+):
+    """Get a single repository label by ID."""
+    return _call("GET", "/repos/{owner}/{repo}/labels/{label_id}", locals())
+
+@_op(gitea_read)
+def list_label_templates():
+    """List the names of Gitea's built-in label template sets.
+
+    These are the starter label sets (e.g. 'Advanced', 'Default') an instance
+    ships with, not any repository's labels. Feed a name to
+    get_label_template to see what is inside one."""
+    return _ok(_get_client().get("/label/templates"))
+
+@_op(gitea_read)
+def get_label_template(
+    name: Annotated[str, Field(description="Template set name as returned by list_label_templates (e.g. 'Default', 'Advanced').")],
+):
+    """List the labels defined in one built-in label template set.
+
+    Returns name/color/description/exclusive per label. These are templates
+    only — nothing is created until you pass the values to
+    create_repo_label."""
+    return _ok(_get_client().get(f"/label/templates/{name}"))
 
 # ── Milestones ───────────────────────────────────────────────────────────────
 
@@ -4120,6 +4243,41 @@ def render_markdown(
         body["Wiki"] = wiki
     return _get_client()._text("POST", "/markdown", json=body)
 
+@_op(gitea_write)
+def render_markdown_raw(
+    text: Annotated[str, Field(description="Raw Markdown source, sent verbatim as a text/plain request body.")],
+):
+    """Render a raw markdown document. Returns HTML text.
+
+    The bare-body sibling of render_markdown: no mode and no repo context, so
+    relative links and #N issue references are not resolved. Use
+    render_markdown when either matters."""
+    return _get_client().post_text("/markdown/raw", text, "text/plain")
+
+@_op(gitea_write)
+def render_markup(
+    text: Annotated[str, Field(description="Raw markup source to render.")],
+    mode: Annotated[Literal["markdown", "comment", "wiki", "file"] | None, Field(description="Markup format / render context. 'file' picks the renderer from `file_path`'s extension, which is how non-Markdown markup (Org, AsciiDoc, ...) is rendered.")] = None,
+    context: Annotated[str | None, Field(description="URL path used to resolve relative links and media, e.g. '/owner/repo/src/branch/main'.")] = None,
+    file_path: Annotated[str | None, Field(description="File path whose extension selects the renderer when mode='file', e.g. 'docs/README.org'.")] = None,
+    wiki: Annotated[bool | None, Field(description="Deprecated in the Gitea API — use mode='wiki' instead. True = treat input as a wiki page.")] = None,
+):
+    """Render a markup document. Returns HTML text.
+
+    Unlike render_markdown this can render any markup format the instance
+    supports, chosen by `mode` (or by `file_path`'s extension with
+    mode='file')."""
+    body: dict = {"Text": text}
+    if mode is not None:
+        body["Mode"] = mode
+    if context is not None:
+        body["Context"] = context
+    if file_path is not None:
+        body["FilePath"] = file_path
+    if wiki is not None:
+        body["Wiki"] = wiki
+    return _get_client()._text("POST", "/markup", json=body)
+
 @_op(gitea_read)
 def search_topics(
     query: Annotated[str, Field(description="Search keyword (substring match against topic names).")],
@@ -4143,6 +4301,15 @@ def get_signing_key():
     return _get_client().get_text("/signing-key.gpg")
 
 @_op(gitea_read)
+def get_signing_key_ssh():
+    """Get the instance's default SSH signing key. Returns text/plain.
+
+    The OpenSSH public key Gitea signs commits with when SSH signing is
+    configured; get_signing_key is the GPG counterpart. An instance with no
+    SSH signing key configured answers 404 or an empty body."""
+    return _get_client().get_text("/signing-key.pub")
+
+@_op(gitea_read)
 def get_nodeinfo():
     """Get NodeInfo for the Gitea instance."""
     return _ok(_get_client().get("/nodeinfo"))
@@ -4160,6 +4327,16 @@ def get_license_template(
 ):
     """Get a specific license template by name."""
     return _ok(_get_client().get(f"/licenses/{name}"))
+
+@_op(gitea_read)
+def get_repo_by_id(
+    repo_id: Annotated[int, Field(description="Numeric repository ID (int64), as it appears in the `id` field of any repo object — NOT 'owner/repo'.")],
+):
+    """Get a repository by its numeric ID.
+
+    The lookup for when you hold an ID from a webhook payload, notification,
+    or search result and do not know the owner/name pair get_repo needs."""
+    return _call("GET", "/repositories/{repo_id}", locals())
 
 @_op(gitea_read)
 def list_package_versions(
