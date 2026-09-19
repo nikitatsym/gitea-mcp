@@ -1644,6 +1644,25 @@ def list_issues(
     return _ok(data)
 
 @_op(gitea_read)
+def list_pinned_issues(
+    owner: str,
+    repo: str,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea issue objects.")] = True,
+):
+    """List a repository's pinned issues, in pin order.
+
+    Pull requests are pinned separately and are not returned here. The
+    endpoint takes no paging: Gitea caps the number of pins per repo.
+
+    brief (default True): compact view — number, title, state, labels,
+    assignees, updated_at, and the <brief>...</brief> body summary.
+    Set brief=False for full Gitea API response objects."""
+    data = _get_client().get(f"/repos/{owner}/{repo}/issues/pinned")
+    if brief:
+        data = _slim_issues(data)
+    return _ok(data)
+
+@_op(gitea_read)
 def search_issues(
     query: Annotated[str, Field(description="Keyword to match against issue title/body.")],
     owner: Annotated[str | None, Field(description="Scope search to a specific owner (username or org).")] = None,
@@ -1722,6 +1741,71 @@ def edit_issue(
         _validate_brief(body)
     return _call("PATCH", "/repos/{owner}/{repo}/issues/{index}", locals())
 
+@_op(gitea_delete)
+def delete_issue(owner: str, repo: str, index: int):
+    """Delete an issue outright — the issue and its comments are gone for good.
+
+    This is NOT closing an issue: to close one, use edit_issue with
+    state='closed'. Requires repo admin rights; Gitea answers 204 on success."""
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}", locals())
+
+@_op(gitea_write)
+def add_issue_assignees(
+    owner: str,
+    repo: str,
+    index: int,
+    assignees: Annotated[list[str], Field(description=(
+        "USERNAMES to add as assignees (NOT user IDs / NOT display names). "
+        "Added to whoever is already assigned; use edit_issue to replace the "
+        "whole set instead. A username that cannot be assigned in this repo "
+        "returns 422."
+    ))],
+):
+    """Add assignees to an issue, keeping the existing ones."""
+    return _ok(
+        _get_client().post(
+            f"/repos/{owner}/{repo}/issues/{index}/assignees",
+            json={"assignees": assignees},
+        )
+    )
+
+@_op(gitea_delete)
+def remove_issue_assignees(
+    owner: str,
+    repo: str,
+    index: int,
+    assignees: Annotated[list[str], Field(description=(
+        "USERNAMES to unassign (NOT user IDs / NOT display names), from "
+        "get_issue's `assignees[].login`. Names that are not assigned are "
+        "ignored; the rest of the assignees stay."
+    ))],
+):
+    """Remove assignees from an issue, leaving the others assigned."""
+    # Gitea reads the username list from a body on this DELETE, which the
+    # client's `delete()` (query-params only) cannot carry.
+    return _ok(
+        _get_client()._json(
+            "DELETE",
+            f"/repos/{owner}/{repo}/issues/{index}/assignees",
+            json={"assignees": assignees},
+        )
+    )
+
+@_op(gitea_read)
+def check_issue_assignee(
+    owner: str,
+    repo: str,
+    index: int,
+    assignee: Annotated[str, Field(description="USERNAME to test for assignability (NOT a user ID / display name).")],
+):
+    """Check whether a user may be assigned to an issue.
+
+    Returns {'status': 'ok'} when the user exists and can be assigned (Gitea
+    answers 204); raises a 404 GiteaError when the user does not exist or
+    lacks read access to the repo. Worth calling before add_issue_assignees,
+    which fails the whole request if any one username is unassignable."""
+    return _call("GET", "/repos/{owner}/{repo}/issues/{index}/assignees/{assignee}", locals())
+
 @_op(gitea_read)
 def list_issue_comments(
     owner: str,
@@ -1738,6 +1822,15 @@ def list_issue_comments(
     if brief:
         data = _slim_comments(data)
     return _ok(data)
+
+@_op(gitea_read)
+def get_issue_comment(
+    owner: str,
+    repo: str,
+    comment_id: Annotated[int, Field(description="Comment ID (int64) from list_issue_comments — NOT the issue index.")],
+):
+    """Get one issue comment by its ID, with the full (unslimmed) body."""
+    return _call("GET", "/repos/{owner}/{repo}/issues/comments/{comment_id}", locals())
 
 @_op(gitea_write)
 def create_issue_comment(
@@ -1771,6 +1864,34 @@ def edit_issue_comment(
 def delete_issue_comment(owner: str, repo: str, comment_id: int):
     """Delete a comment on an issue."""
     return _call("DELETE", "/repos/{owner}/{repo}/issues/comments/{comment_id}", locals())
+
+@_op(gitea_write)
+def edit_issue_comment_deprecated(
+    owner: str,
+    repo: str,
+    index: Annotated[int, Field(description="Issue index. Gitea ignores it on this route — the comment is found by comment_id alone — but the path requires a value.")],
+    comment_id: Annotated[int, Field(description="Comment ID (int64) from list_issue_comments — NOT the issue index.")],
+    body: Annotated[str, Field(description="Replacement comment body as markdown text.")],
+):
+    """Edit a comment through the deprecated issue-scoped route.
+
+    Gitea marks this endpoint deprecated: prefer edit_issue_comment, which
+    takes the same comment_id without the ignored index. Kept so the route
+    stays reachable on instances whose clients still use it."""
+    return _call("PATCH", "/repos/{owner}/{repo}/issues/{index}/comments/{comment_id}", locals())
+
+@_op(gitea_delete)
+def delete_issue_comment_deprecated(
+    owner: str,
+    repo: str,
+    index: Annotated[int, Field(description="Issue index. Gitea ignores it on this route — the comment is found by comment_id alone — but the path requires a value.")],
+    comment_id: Annotated[int, Field(description="Comment ID (int64) from list_issue_comments — NOT the issue index.")],
+):
+    """Delete a comment through the deprecated issue-scoped route.
+
+    Gitea marks this endpoint deprecated: prefer delete_issue_comment, which
+    takes the same comment_id without the ignored index."""
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/comments/{comment_id}", locals())
 
 @_op(gitea_read)
 def list_issue_labels(owner: str, repo: str, index: int):
@@ -1881,6 +2002,15 @@ def delete_stopwatch(owner: str, repo: str, index: int):
     """Delete a stopwatch on an issue."""
     return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/stopwatch/delete", locals())
 
+@_op(gitea_delete)
+def reset_issue_tracked_times(owner: str, repo: str, index: int):
+    """Delete ALL of the authenticated user's tracked time on an issue.
+
+    Wipes every entry that user logged, not one of them — delete_tracked_time
+    removes a single entry by its time_id. Other users' entries are untouched.
+    Returns 400 when time tracking is disabled on the repo."""
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/times", locals())
+
 # ── Issue Extended ───────────────────────────────────────────────────────────
 
 
@@ -1930,6 +2060,80 @@ def remove_issue_dependency(
         )
     )
 
+@_op(gitea_read)
+def list_issue_blocks(
+    owner: str,
+    repo: str,
+    index: int,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea issue objects.")] = True,
+):
+    """List the issues this issue blocks — the reverse of list_issue_dependencies.
+
+    Those issues cannot be closed until this one is. Dependencies are the
+    other direction: issues that must close before this one can.
+
+    brief (default True): compact view — number, title, state, labels,
+    assignees, updated_at, and the <brief>...</brief> body summary.
+    Set brief=False for full Gitea API response objects."""
+    data = _get_client().paginate(f"/repos/{owner}/{repo}/issues/{index}/blocks")
+    if brief:
+        data = _slim_issues(data)
+    return _ok(data)
+
+@_op(gitea_write)
+def add_issue_block(
+    owner: str,
+    repo: str,
+    index: int,
+    blocked_index: Annotated[int, Field(description=(
+        "Issue index of the issue to BLOCK (the per-repo issue number, NOT a "
+        "global issue ID). Issue #blocked_index will not be closable until "
+        "issue #index closes."
+    ))],
+    blocked_owner: Annotated[str | None, Field(description="Owner of the blocked issue's repo, for a cross-repo block. Defaults to `owner`; cross-repo needs the instance's cross-repository-dependencies setting enabled.")] = None,
+    blocked_repo: Annotated[str | None, Field(description="Repo NAME of the blocked issue, for a cross-repo block. Defaults to `repo`.")] = None,
+):
+    """Make this issue block another one, so the other cannot close first."""
+    # Body is Gitea's IssueMeta {index, owner, repo} naming the BLOCKED issue.
+    return _ok(
+        _get_client().post(
+            f"/repos/{owner}/{repo}/issues/{index}/blocks",
+            json={
+                "index": blocked_index,
+                "owner": blocked_owner or owner,
+                "repo": blocked_repo or repo,
+            },
+        )
+    )
+
+@_op(gitea_delete)
+def remove_issue_block(
+    owner: str,
+    repo: str,
+    index: int,
+    blocked_index: Annotated[int, Field(description=(
+        "Issue index of the issue to UNBLOCK (per-repo issue number, NOT a "
+        "global issue ID). Removes the block edge from issue #index to "
+        "issue #blocked_index."
+    ))],
+    blocked_owner: Annotated[str | None, Field(description="Owner of the blocked issue's repo, for a cross-repo block. Defaults to `owner`.")] = None,
+    blocked_repo: Annotated[str | None, Field(description="Repo NAME of the blocked issue, for a cross-repo block. Defaults to `repo`.")] = None,
+):
+    """Stop this issue from blocking another one."""
+    # Gitea reads the IssueMeta body on this DELETE, which the client's
+    # `delete()` (query-params only) cannot carry.
+    return _ok(
+        _get_client()._json(
+            "DELETE",
+            f"/repos/{owner}/{repo}/issues/{index}/blocks",
+            json={
+                "index": blocked_index,
+                "owner": blocked_owner or owner,
+                "repo": blocked_repo or repo,
+            },
+        )
+    )
+
 @_op(gitea_write)
 def pin_issue(owner: str, repo: str, index: int):
     """Pin an issue in a repository."""
@@ -1939,6 +2143,23 @@ def pin_issue(owner: str, repo: str, index: int):
 def unpin_issue(owner: str, repo: str, index: int):
     """Unpin an issue in a repository."""
     return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/pin", locals())
+
+@_op(gitea_write)
+def move_issue_pin(
+    owner: str,
+    repo: str,
+    index: int,
+    position: Annotated[int, Field(description=(
+        "New 1-based pin position; 1 is first. Must be >= 1 — Gitea rejects "
+        "0 or negatives. Other pins shift to close the gap, so a position "
+        "past the last pin lands the issue at the end."
+    ))],
+):
+    """Move an already-pinned issue to a different position in the pin order.
+
+    The issue must already be pinned (see pin_issue); this only reorders.
+    Use list_pinned_issues to read the current order."""
+    return _call("PATCH", "/repos/{owner}/{repo}/issues/{index}/pin/{position}", locals())
 
 @_op(gitea_write)
 def lock_issue(owner: str, repo: str, index: int):
@@ -1968,6 +2189,146 @@ def subscribe_to_issue(owner: str, repo: str, index: int, user: str):
 def unsubscribe_from_issue(owner: str, repo: str, index: int, user: str):
     """Unsubscribe a user from an issue."""
     return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/subscriptions/{user}", locals())
+
+@_op(gitea_read)
+def check_issue_subscription(owner: str, repo: str, index: int):
+    """Check whether the AUTHENTICATED user is subscribed to an issue.
+
+    Always reports the caller's own subscription — it takes no username, so
+    to inspect someone else's use list_issue_subscriptions. Returns a
+    WatchInfo object whose `subscribed` field carries the answer."""
+    return _call("GET", "/repos/{owner}/{repo}/issues/{index}/subscriptions/check", locals())
+
+@_op(gitea_read)
+def list_issue_attachments(owner: str, repo: str, index: int):
+    """List an issue's attachments (id, name, size, download URL).
+
+    Attachments hang off the issue itself; files attached to a comment are
+    listed by list_issue_comment_attachments instead."""
+    return _call("GET", "/repos/{owner}/{repo}/issues/{index}/assets", locals())
+
+@_op(gitea_read)
+def get_issue_attachment(
+    owner: str,
+    repo: str,
+    index: int,
+    attachment_id: Annotated[int, Field(description="Attachment ID (int64) from list_issue_attachments — NOT the issue index.")],
+):
+    """Get one issue attachment's metadata, including its download URL.
+
+    Returns the JSON record, not the file bytes: fetch `browser_download_url`
+    to get the content."""
+    return _call("GET", "/repos/{owner}/{repo}/issues/{index}/assets/{attachment_id}", locals())
+
+@_op(gitea_write)
+def create_issue_attachment(
+    owner: str,
+    repo: str,
+    index: int,
+    filename: Annotated[str, Field(description="Filename to send in the multipart part, e.g. 'trace.log'. Used as the display name when `name` is omitted.")],
+    content: Annotated[str, Field(description="Base64-encoded file content. An MCP client cannot send raw bytes, so encode first; the op decodes before upload.")],
+    name: Annotated[str | None, Field(description="Display name to store the attachment under, overriding `filename`. Sent as a QUERY param, per Gitea's spec.")] = None,
+):
+    """Attach a file to an issue. Content is sent base64-encoded and decoded here."""
+    # `name` is a query param and must vanish when omitted, so the params dict
+    # comes from _body(), which drops the None; the file itself rides the
+    # multipart part and is not a wire field.
+    return _ok(
+        _get_client().upload(
+            f"/repos/{owner}/{repo}/issues/{index}/assets",
+            "attachment",
+            filename,
+            base64.b64decode(content),
+            params=_body(locals(), exclude=("owner", "repo", "index", "filename", "content")),
+        )
+    )
+
+@_op(gitea_write)
+def edit_issue_attachment(
+    owner: str,
+    repo: str,
+    index: int,
+    attachment_id: Annotated[int, Field(description="Attachment ID (int64) from list_issue_attachments — NOT the issue index.")],
+    name: Annotated[str | None, Field(description="New display filename for the attachment. Renames the record only; the stored bytes are untouched.")] = None,
+):
+    """Rename an issue attachment. Only the display name can be changed."""
+    return _call("PATCH", "/repos/{owner}/{repo}/issues/{index}/assets/{attachment_id}", locals())
+
+@_op(gitea_delete)
+def delete_issue_attachment(
+    owner: str,
+    repo: str,
+    index: int,
+    attachment_id: Annotated[int, Field(description="Attachment ID (int64) from list_issue_attachments — NOT the issue index.")],
+):
+    """Delete an issue attachment. The stored file is removed for good."""
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/{index}/assets/{attachment_id}", locals())
+
+@_op(gitea_read)
+def list_issue_comment_attachments(
+    owner: str,
+    repo: str,
+    comment_id: Annotated[int, Field(description="Comment ID (int64) from list_issue_comments — NOT the issue index.")],
+):
+    """List the attachments on one issue comment (id, name, size, download URL)."""
+    return _call("GET", "/repos/{owner}/{repo}/issues/comments/{comment_id}/assets", locals())
+
+@_op(gitea_read)
+def get_issue_comment_attachment(
+    owner: str,
+    repo: str,
+    comment_id: Annotated[int, Field(description="Comment ID (int64) from list_issue_comments — NOT the issue index.")],
+    attachment_id: Annotated[int, Field(description="Attachment ID (int64) from list_issue_comment_attachments.")],
+):
+    """Get one comment attachment's metadata, including its download URL.
+
+    Returns the JSON record, not the file bytes: fetch `browser_download_url`
+    to get the content."""
+    return _call("GET", "/repos/{owner}/{repo}/issues/comments/{comment_id}/assets/{attachment_id}", locals())
+
+@_op(gitea_write)
+def create_issue_comment_attachment(
+    owner: str,
+    repo: str,
+    comment_id: Annotated[int, Field(description="Comment ID (int64) from list_issue_comments — NOT the issue index.")],
+    filename: Annotated[str, Field(description="Filename to send in the multipart part, e.g. 'trace.log'. Used as the display name when `name` is omitted.")],
+    content: Annotated[str, Field(description="Base64-encoded file content. An MCP client cannot send raw bytes, so encode first; the op decodes before upload.")],
+    name: Annotated[str | None, Field(description="Display name to store the attachment under, overriding `filename`. Sent as a QUERY param, per Gitea's spec.")] = None,
+):
+    """Attach a file to an issue comment. Content is sent base64-encoded and decoded here."""
+    # `name` is a query param and must vanish when omitted, so the params dict
+    # comes from _body(), which drops the None; the file itself rides the
+    # multipart part and is not a wire field.
+    return _ok(
+        _get_client().upload(
+            f"/repos/{owner}/{repo}/issues/comments/{comment_id}/assets",
+            "attachment",
+            filename,
+            base64.b64decode(content),
+            params=_body(locals(), exclude=("owner", "repo", "comment_id", "filename", "content")),
+        )
+    )
+
+@_op(gitea_write)
+def edit_issue_comment_attachment(
+    owner: str,
+    repo: str,
+    comment_id: Annotated[int, Field(description="Comment ID (int64) from list_issue_comments — NOT the issue index.")],
+    attachment_id: Annotated[int, Field(description="Attachment ID (int64) from list_issue_comment_attachments.")],
+    name: Annotated[str | None, Field(description="New display filename for the attachment. Renames the record only; the stored bytes are untouched.")] = None,
+):
+    """Rename a comment attachment. Only the display name can be changed."""
+    return _call("PATCH", "/repos/{owner}/{repo}/issues/comments/{comment_id}/assets/{attachment_id}", locals())
+
+@_op(gitea_delete)
+def delete_issue_comment_attachment(
+    owner: str,
+    repo: str,
+    comment_id: Annotated[int, Field(description="Comment ID (int64) from list_issue_comments — NOT the issue index.")],
+    attachment_id: Annotated[int, Field(description="Attachment ID (int64) from list_issue_comment_attachments.")],
+):
+    """Delete a comment attachment. The stored file is removed for good."""
+    return _call("DELETE", "/repos/{owner}/{repo}/issues/comments/{comment_id}/assets/{attachment_id}", locals())
 
 # ── Reactions ────────────────────────────────────────────────────────────────
 
