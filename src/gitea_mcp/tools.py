@@ -309,6 +309,58 @@ def list_user_repos(username: str, brief: bool = True):
     return _ok(data)
 
 @_op(gitea_read)
+def list_my_repos(
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea repo objects.")] = True,
+):
+    """List repositories owned by the current user.
+
+    Unlike list_user_repos this is the authenticated view, so private repos
+    the token can see are included.
+
+    brief (default True): compact view — full_name, description, language,
+    stars, issues count, default_branch, updated_at.
+    Set brief=False for full Gitea API response objects."""
+    data = _get_client().paginate("/user/repos")
+    if brief:
+        data = _slim_repos(data)
+    return _ok(data)
+
+@_op(gitea_read)
+def list_user_starred_repos(
+    username: str,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea repo objects.")] = True,
+):
+    """List repositories starred by a given user.
+
+    brief (default True): compact view. Set brief=False for full objects."""
+    data = _get_client().paginate(f"/users/{username}/starred")
+    if brief:
+        data = _slim_repos(data)
+    return _ok(data)
+
+@_op(gitea_read)
+def list_user_subscriptions(
+    username: str,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea repo objects.")] = True,
+):
+    """List repositories watched by a given user.
+
+    brief (default True): compact view. Set brief=False for full objects."""
+    data = _get_client().paginate(f"/users/{username}/subscriptions")
+    if brief:
+        data = _slim_repos(data)
+    return _ok(data)
+
+@_op(gitea_read)
+def check_repo_starred(owner: str, repo: str):
+    """Check whether the current user has starred a repository.
+
+    Membership check with no response body: Gitea answers 204 when the repo
+    is starred and 404 when it is not. A returned {"status": "ok"} therefore
+    means starred; not-starred surfaces as a 404 GiteaError, not as False."""
+    return _ok(_get_client().get(f"/user/starred/{owner}/{repo}"))
+
+@_op(gitea_read)
 def list_followers(username: str):
     """List a user's followers."""
     return _ok(_get_client().paginate(f"/users/{username}/followers"))
@@ -317,6 +369,16 @@ def list_followers(username: str):
 def list_following(username: str):
     """List the users that a user is following."""
     return _ok(_get_client().paginate(f"/users/{username}/following"))
+
+@_op(gitea_read)
+def list_my_followers():
+    """List the current user's followers."""
+    return _ok(_get_client().paginate("/user/followers"))
+
+@_op(gitea_read)
+def list_my_following():
+    """List the users the current user is following."""
+    return _ok(_get_client().paginate("/user/following"))
 
 @_op(gitea_write)
 def follow_user(username: str):
@@ -329,9 +391,41 @@ def unfollow_user(username: str):
     return _ok(_get_client().delete(f"/user/following/{username}"))
 
 @_op(gitea_read)
+def check_my_following(username: str):
+    """Check whether the current user follows a given user.
+
+    Membership check with no response body: Gitea answers 204 when the
+    current user follows `username` and 404 when it does not. A returned
+    {"status": "ok"} therefore means "is followed"; not-followed surfaces as
+    a 404 GiteaError, not as False."""
+    return _ok(_get_client().get(f"/user/following/{username}"))
+
+@_op(gitea_read)
 def list_user_heatmap(username: str):
     """Get a user's contribution heatmap."""
     return _ok(_get_client().get(f"/users/{username}/heatmap"))
+
+@_op(gitea_read)
+def list_user_activities(
+    username: str,
+    only_performed_by: Annotated[bool | None, Field(description="True = only actions this user performed. Omitted/False also includes activity on repositories they own that others performed.")] = None,
+    date: Annotated[str | None, Field(description="Restrict the feed to a single calendar day, 'YYYY-MM-DD' (e.g. '2026-09-19'). Omit for the whole feed.")] = None,
+):
+    """List a user's public activity feed (pushes, issues, PRs, stars, forks)."""
+    params = _body(locals(), exclude=("username",), rename={"only_performed_by": "only-performed-by"})
+    return _ok(
+        _get_client().paginate(
+            f"/users/{username}/activities/feeds", params=params or None
+        )
+    )
+
+@_op(gitea_read)
+def get_user_org_permissions(username: str, org: str):
+    """Get a user's permissions in an organization.
+
+    Returns the boolean flags is_owner, is_admin, can_write, can_read and
+    can_create_repository for `username` within `org`."""
+    return _ok(_get_client().get(f"/users/{username}/orgs/{org}/permissions"))
 
 @_op(gitea_read)
 def get_user_settings():
@@ -414,6 +508,16 @@ def unblock_user(username: str):
     """Unblock a user."""
     return _ok(_get_client().delete(f"/user/blocks/{username}"))
 
+@_op(gitea_read)
+def check_user_blocked(username: str):
+    """Check whether the current user has blocked a given user.
+
+    Membership check with no response body: Gitea answers 204 when
+    `username` is blocked and 404 when it is not. A returned
+    {"status": "ok"} therefore means blocked; not-blocked surfaces as a 404
+    GiteaError, not as False."""
+    return _ok(_get_client().get(f"/user/blocks/{username}"))
+
 @_op(gitea_write)
 def update_user_settings(
     description: str | None = None,
@@ -428,6 +532,21 @@ def update_user_settings(
 ):
     """Update the current user's settings."""
     return _call("PATCH", "/user/settings", locals())
+
+@_op(gitea_write)
+def update_user_avatar(
+    image: Annotated[str, Field(description="Base64-encoded image bytes (PNG/JPEG). NOT a URL and NOT a file path — read the file and base64-encode its bytes.")],
+):
+    """Set the current user's avatar.
+
+    Gitea takes the picture as a base64 string in the JSON body
+    (UpdateUserAvatarOption), not as a multipart file upload."""
+    return _ok(_get_client().post("/user/avatar", json={"image": image}))
+
+@_op(gitea_delete)
+def delete_user_avatar():
+    """Remove the current user's avatar, reverting to Gitea's generated default."""
+    return _ok(_get_client().delete("/user/avatar"))
 
 # ── Access Tokens ────────────────────────────────────────────────────────────
 
@@ -498,6 +617,60 @@ def create_user_access_token(
             json={"name": name, "scopes": scopes},
         )
     )
+
+@_op(gitea_read)
+def list_user_access_tokens(
+    username: Annotated[str | None, Field(description="Target username. Defaults to the authenticated user (derived from /user).")] = None,
+    password: Annotated[str | None, Field(description="Basic-auth password OR an existing PAT with 'read:user' / 'all' scope. Defaults to GITEA_TOKEN.")] = None,
+):
+    """List a user's personal access tokens (id, name, scopes — never the secret).
+
+    Requires HTTP Basic auth, exactly like create_user_access_token: the
+    token-auth client cannot reach /users/{username}/tokens. Defaults to the
+    authenticated user with `GITEA_TOKEN` as the Basic password (Gitea's
+    Basic.Verify accepts a PAT there if it has `read:user` or `all` scope).
+
+    Use the returned `id` as the `token` argument of
+    delete_user_access_token. The Basic-auth path sends no page/limit, so
+    this returns Gitea's first page at the server's default page size."""
+    s = get_settings()
+    pwd = password or s.gitea_token
+    user = username
+    if not user:
+        me = _get_client().get("/user") or {}
+        user = me.get("login")
+    if not user or not pwd:
+        raise ValueError(
+            "username/password unresolved — pass them as args, or ensure "
+            "GITEA_TOKEN is set and has read:user (or all) scope"
+        )
+    return _ok(_basic_auth_request("GET", f"/users/{user}/tokens", user, pwd))
+
+@_op(gitea_delete)
+def delete_user_access_token(
+    token: Annotated[str, Field(description="Token `id` (int64, passed as a string) from list_user_access_tokens; Gitea also accepts the token's `name` when the id is unavailable. NOT the secret token value.")],
+    username: Annotated[str | None, Field(description="Target username. Defaults to the authenticated user (derived from /user).")] = None,
+    password: Annotated[str | None, Field(description="Basic-auth password OR an existing PAT with 'write:user' / 'all' scope. Defaults to GITEA_TOKEN.")] = None,
+):
+    """Delete a user's personal access token. Irreversible — the token stops working at once.
+
+    Requires HTTP Basic auth, exactly like create_user_access_token: the
+    token-auth client cannot reach /users/{username}/tokens/{token}.
+    Defaults to the authenticated user with `GITEA_TOKEN` as the Basic
+    password. Deleting the token currently configured as `GITEA_TOKEN`
+    locks this MCP server out of the instance."""
+    s = get_settings()
+    pwd = password or s.gitea_token
+    user = username
+    if not user:
+        me = _get_client().get("/user") or {}
+        user = me.get("login")
+    if not user or not pwd:
+        raise ValueError(
+            "username/password unresolved — pass them as args, or ensure "
+            "GITEA_TOKEN is set and has write:user (or all) scope"
+        )
+    return _ok(_basic_auth_request("DELETE", f"/users/{user}/tokens/{token}", user, pwd))
 
 # ── SSH / GPG Keys ──────────────────────────────────────────────────────────
 
