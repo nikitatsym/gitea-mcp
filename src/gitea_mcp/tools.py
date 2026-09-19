@@ -3893,9 +3893,34 @@ def list_org_teams(org: str):
     return _ok(_get_client().paginate(f"/orgs/{org}/teams"))
 
 @_op(gitea_read)
+def search_org_teams(
+    org: str,
+    query: Annotated[str | None, Field(description="Search keyword (substring match against team name).")] = None,
+    include_desc: Annotated[bool | None, Field(description="True (Gitea's default) = also match `query` against team descriptions; False = match team names only.")] = None,
+    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = None,
+    page: Annotated[int | None, Field(description="1-based page number.")] = None,
+):
+    """Search for teams within an organization by keyword.
+
+    Unlike list_org_teams this returns ONE page, not every team — use
+    `page`/`limit` to walk the results."""
+    return _call("GET", "/orgs/{org}/teams/search", locals(), rename={"query": "q"})
+
+@_op(gitea_read)
 def get_team(team_id: int):
     """Get a team by ID."""
     return _ok(_get_client().get(f"/teams/{team_id}"))
+
+@_op(gitea_read)
+def list_team_activities(
+    team_id: int,
+    date: Annotated[str | None, Field(description="Single calendar day to report, as 'YYYY-MM-DD'. Omit for the most recent activity.")] = None,
+):
+    """List a team's activity feeds."""
+    params = _body(locals(), exclude=("team_id",))
+    return _ok(
+        _get_client().paginate(f"/teams/{team_id}/activities/feeds", params=params or None)
+    )
 
 @_op(gitea_write)
 def create_team(
@@ -3939,6 +3964,11 @@ def list_team_members(team_id: int):
     """List members of a team."""
     return _ok(_get_client().paginate(f"/teams/{team_id}/members"))
 
+@_op(gitea_read)
+def get_team_member(team_id: int, username: str):
+    """Get one member of a team. Returns the user, or 404 if they are not on the team."""
+    return _ok(_get_client().get(f"/teams/{team_id}/members/{username}"))
+
 @_op(gitea_write)
 def add_team_member(team_id: int, username: str):
     """Add a member to a team."""
@@ -3968,6 +3998,37 @@ def remove_team_repo(team_id: int, org: str, repo: str):
 def check_team_repo(team_id: int, org: str, repo: str):
     """Check if a repository belongs to a team."""
     return _ok(_get_client().get(f"/teams/{team_id}/repos/{org}/{repo}"))
+
+@_op(gitea_write)
+def add_repo_team(
+    owner: str,
+    repo: str,
+    team: Annotated[str, Field(description="Team NAME (e.g. 'Owners') from list_org_teams — this repo-side endpoint takes the name, NOT the numeric team ID that add_team_repo takes.")],
+):
+    """Grant a team access to a repository, addressed by team name.
+
+    Repo-side twin of add_team_repo; the team must belong to the repo's org."""
+    return _ok(_get_client().put(f"/repos/{owner}/{repo}/teams/{team}"))
+
+@_op(gitea_delete)
+def remove_repo_team(
+    owner: str,
+    repo: str,
+    team: Annotated[str, Field(description="Team NAME (e.g. 'Owners') from list_org_teams — this repo-side endpoint takes the name, NOT the numeric team ID that remove_team_repo takes.")],
+):
+    """Revoke a team's access to a repository, addressed by team name.
+
+    Repo-side twin of remove_team_repo."""
+    return _ok(_get_client().delete(f"/repos/{owner}/{repo}/teams/{team}"))
+
+@_op(gitea_read)
+def check_repo_team(
+    owner: str,
+    repo: str,
+    team: Annotated[str, Field(description="Team NAME (e.g. 'Owners') from list_org_teams — this repo-side endpoint takes the name, NOT the numeric team ID that check_team_repo takes.")],
+):
+    """Check whether a team has access to a repository. Returns the team, or 404 if not assigned."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/teams/{team}"))
 
 # ── Org Labels ───────────────────────────────────────────────────────────────
 
