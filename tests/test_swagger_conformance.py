@@ -146,14 +146,25 @@ _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 _CLIENT_VERBS = {
     "get": "GET",
     "get_text": "GET",
+    "get_bytes": "GET",
     "paginate": "GET",
     "post": "POST",
+    "post_text": "POST",
+    "upload": "POST",
     "put": "PUT",
     "patch": "PATCH",
     "delete": "DELETE",
 }
-_RAW_VERBS = {"_json", "_text"}
-_NO_PAYLOAD_KWARGS = {"headers"}
+_RAW_VERBS = {"_json", "_text", "_bytes"}
+# Kwargs that carry transport detail, not wire field names: `headers` and
+# `content_type` set the request's shape, and `files`/`field`/`filename`/`data`
+# name a multipart part rather than a body field the spec would list.
+_NO_PAYLOAD_KWARGS = {"headers", "content", "content_type", "files", "field", "filename", "data"}
+# Verbs whose positional args after the path are transport, not wire fields:
+# `upload(path, field, filename, data)` names a multipart part and
+# `post_text(path, content, content_type)` carries a raw body the spec
+# describes as a single unnamed parameter.
+_TRANSPORT_POSITIONALS = frozenset({"upload", "post_text"})
 
 # Call plumbing the extractor already models; everything else that reaches
 # these markers inside a helper is a wire call hiding from the check.
@@ -618,7 +629,7 @@ class _OpExtractor:
             return None
         if self._unreadable_since(mark):
             return None
-        if extra:
+        if extra and verb not in _TRANSPORT_POSITIONALS:
             self._block(f"{verb}() passes a payload positionally")
         query: set[str] = set()
         body: set[str] = set()

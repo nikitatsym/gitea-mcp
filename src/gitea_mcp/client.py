@@ -84,6 +84,10 @@ class GiteaClient:
         r = self._request(method, path, **kwargs)
         return r.text
 
+    def _bytes(self, method: str, path: str, **kwargs) -> bytes:
+        r = self._request(method, path, **kwargs)
+        return r.content
+
     def _paginate(self, path: str, params: dict | None = None, limit: int = _DEFAULT_LIMIT) -> list:
         params = dict(params or {})
         params["limit"] = limit
@@ -119,6 +123,25 @@ class GiteaClient:
 
     def get_text(self, path: str, params: dict | None = None) -> str:
         return self._text("GET", path, params=params)
+
+    def get_bytes(self, path: str, params: dict | None = None) -> bytes:
+        """Raw response body, for endpoints that produce binary (media files)."""
+        return self._bytes("GET", path, params=params)
+
+    def post_text(self, path: str, content: str, content_type: str) -> str:
+        """POST a raw (non-JSON) request body; used by the markdown/markup renderers."""
+        return self._text(
+            "POST", path, content=content.encode(), headers={"Content-Type": content_type}
+        )
+
+    def upload(self, path: str, field: str, filename: str, data: bytes, params: dict | None = None):
+        """POST one `multipart/form-data` file part.
+
+        Gitea's attachment endpoints take the file under a fixed field name
+        (`attachment`) and read the display name from a query param, not from
+        the part. httpx sets the multipart Content-Type and boundary itself.
+        """
+        return self._json("POST", path, files={field: (filename, data)}, params=params)
 
     def paginate(self, path: str, params: dict | None = None) -> list:
         return self._paginate(path, params)

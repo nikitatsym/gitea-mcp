@@ -1,8 +1,8 @@
 services:
   gitea:
-    # Pinned (1.26.4): error-message texts the pinned-error tests assert drift
+    # Pinned (1.27.3): error-message texts the pinned-error tests assert drift
     # across Gitea versions; bump the digest and those assertions together.
-    image: gitea/gitea@sha256:8e25c717b8f748445e15ec46e0390f577cb628101184cb0a150d1dae126c1f39
+    image: gitea/gitea@sha256:87a67ee09d3ae0d1df5fda5dcda3e2a1f9236a45b0a59025d6e00e46adc43bef
     environment:
       - GITEA__security__INSTALL_LOCK=true
       - GITEA__server__ROOT_URL=http://localhost:3000
