@@ -122,6 +122,24 @@ def _body(
     return out
 
 
+def _commit_author(body: dict, author_name: str | None, author_email: str | None) -> None:
+    """Attach Gitea's `author` object to a contents-API commit body, in place.
+
+    Gitea nests the git author override one level down, and omits the whole
+    object when neither half was given: sending `{"author": {}}` makes it
+    record an empty author rather than fall back to the token's identity.
+    Either half alone is legal - Gitea fills the other from the account.
+    """
+    if author_name is None and author_email is None:
+        return
+    author: dict = {}
+    if author_name is not None:
+        author["name"] = author_name
+    if author_email is not None:
+        author["email"] = author_email
+    body["author"] = author
+
+
 # ── Slim functions ───────────────────────────────────────────────────────────
 
 

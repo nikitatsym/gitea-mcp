@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import logging
 import re
 import time
@@ -16,6 +17,7 @@ from .client import GiteaClient, GiteaError
 from .config import get_settings
 from .prepare import (
     _body,
+    _commit_author,
     _enforce_private,
     _enforce_visibility,
     _ok,
@@ -848,13 +850,7 @@ def create_file(
         body["branch"] = branch
     if new_branch is not None:
         body["new_branch"] = new_branch
-    if author_name is not None or author_email is not None:
-        author: dict = {}
-        if author_name is not None:
-            author["name"] = author_name
-        if author_email is not None:
-            author["email"] = author_email
-        body["author"] = author
+    _commit_author(body, author_name, author_email)
     return _ok(
         _get_client().post(f"/repos/{owner}/{repo}/contents/{filepath}", json=body)
     )
@@ -922,6 +918,172 @@ def get_raw_file(
     return _get_client().get_text(
         f"/repos/{owner}/{repo}/raw/{filepath}", params=params or None
     )
+
+@_op(gitea_read)
+def list_repo_root_contents(
+    owner: str,
+    repo: str,
+    ref: Annotated[str | None, Field(description="Branch / tag / commit SHA to list from. Defaults to the repo's default branch.")] = None,
+):
+    """Get the metadata of all the entries of the repository's root directory."""
+    return _call("GET", "/repos/{owner}/{repo}/contents", locals())
+
+@_op(gitea_read)
+def get_contents_ext(
+    owner: str,
+    repo: str,
+    filepath: Annotated[str, Field(description="Path of the dir, file, symlink or submodule inside the repo. Empty string or a single dot ('.') = repo root.")] = "",
+    ref: Annotated[str | None, Field(description="Branch / tag / commit SHA to read from. Defaults to the repo's default branch.")] = None,
+    includes: Annotated[str | None, Field(description="Comma-separated extra fields to fetch beyond metadata: 'file_content', 'lfs_metadata', 'commit_metadata', 'commit_message' (e.g. 'file_content,commit_message'). Omit for metadata only.")] = None,
+):
+    """The extended "contents" API — file metadata and/or content, or a directory listing.
+
+    A file answers in `file_contents`, a directory in `dir_contents`. File bodies
+    are only present when `includes` asks for 'file_content', and Gitea returns
+    them base64-encoded (the entry's `encoding` field says so)."""
+    return _call("GET", "/repos/{owner}/{repo}/contents-ext/{filepath}", locals())
+
+def _encoded_change_files(files: list[dict]) -> list[dict]:
+    """Base64-encode the plaintext `content` of each change_files operation."""
+    encoded = []
+    for entry in files:
+        item = dict(entry)
+        if item.get("content") is not None:
+            item["content"] = base64.b64encode(str(item["content"]).encode()).decode()
+        encoded.append(item)
+    return encoded
+
+@_op(gitea_write)
+def change_files(
+    owner: str,
+    repo: str,
+    files: Annotated[list[dict], Field(description=(
+        "File operations to apply as ONE commit. Each item is a dict with keys: "
+        "`operation` (required) — one of 'create', 'update', 'upload', 'rename', 'delete'; "
+        "`path` (required) — path of the existing or new file; "
+        "`content` — file body as PLAINTEXT for create/update/upload; the tool base64-encodes it, do NOT pre-encode; "
+        "`sha` — blob SHA of the file that already exists, required for update/delete (from get_file_content); "
+        "`from_path` — the old path, required for 'rename'."
+    ))],
+    message: Annotated[str | None, Field(description="Git commit message for the whole batch. Gitea generates one if omitted.")] = None,
+    branch: Annotated[str | None, Field(description="Branch to commit on (HEAD advances to the new commit). Defaults to the repo's default branch.")] = None,
+    new_branch: Annotated[str | None, Field(description="If set, create this new branch from `branch` and commit there (PR-style flow). The base `branch` is left untouched.")] = None,
+    author_name: Annotated[str | None, Field(description="Override the git author name for this commit.")] = None,
+    author_email: Annotated[str | None, Field(description="Override the git author email for this commit.")] = None,
+    signoff: Annotated[bool | None, Field(description="True = append a Signed-off-by trailer by the committer to the commit message.")] = None,
+):
+    """Modify multiple files in a repository in a single commit. File contents are provided as plain text and will be base64-encoded automatically."""
+    body: dict = {"files": _encoded_change_files(files)}
+    if message is not None:
+        body["message"] = message
+    if branch is not None:
+        body["branch"] = branch
+    if new_branch is not None:
+        body["new_branch"] = new_branch
+    if signoff is not None:
+        body["signoff"] = signoff
+    _commit_author(body, author_name, author_email)
+    return _ok(_get_client().post(f"/repos/{owner}/{repo}/contents", json=body))
+
+@_op(gitea_execute)
+def apply_diff_patch(
+    owner: str,
+    repo: str,
+    content: Annotated[str, Field(description="The patch to apply, as PLAINTEXT unified diff (`git diff` / `git format-patch` output). Sent raw to `git apply` — do NOT base64-encode it.")],
+    message: Annotated[str | None, Field(description="Git commit message for the applied patch. Gitea generates one if omitted.")] = None,
+    branch: Annotated[str | None, Field(description="Base branch the patch applies to. Defaults to the repo's default branch.")] = None,
+    new_branch: Annotated[str | None, Field(description="If set, commit the result on this new branch created from `branch` (PR-style flow).")] = None,
+    force_push: Annotated[bool | None, Field(description="True = force-push if `new_branch` already exists.")] = None,
+    signoff: Annotated[bool | None, Field(description="True = append a Signed-off-by trailer by the committer to the commit message.")] = None,
+):
+    """Apply a diff patch to a repository and commit the result. Fails if the patch does not apply cleanly."""
+    return _call("POST", "/repos/{owner}/{repo}/diffpatch", locals())
+
+@_op(gitea_read)
+def get_editorconfig(
+    owner: str,
+    repo: str,
+    filepath: Annotated[str, Field(description="Repo-relative path of the file whose EditorConfig rules you want (e.g. 'src/main.py').")],
+    ref: Annotated[str | None, Field(description="Branch / tag / commit SHA whose .editorconfig files are consulted. Defaults to the repo's default branch.")] = None,
+):
+    """Get the EditorConfig definitions resolved for a file in a repository (indent_style, indent_size, charset, ...)."""
+    return _call("GET", "/repos/{owner}/{repo}/editorconfig/{filepath}", locals())
+
+@_op(gitea_read)
+def get_files_contents(
+    owner: str,
+    repo: str,
+    files: Annotated[list[str], Field(description="Repo-relative file paths to fetch in one round trip, e.g. ['README.md', 'src/main.py'].")],
+    ref: Annotated[str | None, Field(description="Branch / tag / commit SHA to read from. Defaults to the repo's default branch.")] = None,
+):
+    """Get the metadata and contents of several requested files at once.
+
+    A read, despite the POST — the path list travels in the request body.
+    Entries that could not be retrieved come back null; a file too large for
+    the response has `encoding` and `content` null and must be fetched
+    singly via its `download_url`. Present bodies are base64-encoded."""
+    params = _body(locals(), exclude=("owner", "repo", "files"))
+    return _ok(
+        _get_client().post(
+            f"/repos/{owner}/{repo}/file-contents",
+            json={"files": files},
+            params=params or None,
+        )
+    )
+
+@_op(gitea_read)
+def get_files_contents_query(
+    owner: str,
+    repo: str,
+    files: Annotated[list[str], Field(description="Repo-relative file paths to fetch in one round trip, e.g. ['README.md', 'src/main.py'].")],
+    ref: Annotated[str | None, Field(description="Branch / tag / commit SHA to read from. Defaults to the repo's default branch.")] = None,
+):
+    """Same batch read as get_files_contents, with the file list JSON-encoded into the query string instead of the body.
+
+    Prefer get_files_contents; this GET variant exists for callers that cannot
+    send a body, and a long path list can overflow the URL."""
+
+    params = {"body": json.dumps({"files": files})}
+    if ref is not None:
+        params["ref"] = ref
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/file-contents", params=params))
+
+@_op(gitea_read)
+def get_blob(
+    owner: str,
+    repo: str,
+    sha: Annotated[str, Field(description="Blob SHA — NOT a commit SHA. Take it from get_file_content's `sha`, or a tree entry's `sha`.")],
+):
+    """Get the blob of a repository. Gitea returns `content` base64-encoded, with `encoding` naming the encoding used."""
+    return _call("GET", "/repos/{owner}/{repo}/git/blobs/{sha}", locals())
+
+@_op(gitea_read)
+def get_media_file(
+    owner: str,
+    repo: str,
+    filepath: Annotated[str, Field(description="Path of the file to get, optionally prefixed with a ref as '{ref}/{filepath}'. Slashes are part of the path and are passed through as-is.")],
+    ref: Annotated[str | None, Field(description="Branch / tag / commit SHA to read from. Defaults to the repo's default branch.")] = None,
+):
+    """Get a file, or its LFS object, from a repository.
+
+    This endpoint serves application/octet-stream, so the bytes are returned
+    BASE64-ENCODED as a string — an MCP result cannot carry raw bytes. Decode
+    before use. For text files prefer get_raw_file, which returns plain text."""
+    params = _body(locals(), exclude=("owner", "repo", "filepath"))
+    data = _get_client().get_bytes(
+        f"/repos/{owner}/{repo}/media/{filepath}", params=params or None
+    )
+    return base64.b64encode(data).decode()
+
+@_op(gitea_read)
+def get_wiki_page_revisions(
+    owner: str,
+    repo: str,
+    page_name: Annotated[str, Field(description="Wiki page name as listed by list_wiki_pages (its `title`), e.g. 'Home'.")],
+    page: Annotated[int | None, Field(description="1-based page number of the revision list.")] = None,
+):
+    """Get the commit revisions of a wiki page."""
+    return _call("GET", "/repos/{owner}/{repo}/wiki/revisions/{page_name}", locals())
 
 # ── Branches ─────────────────────────────────────────────────────────────────
 
@@ -1006,6 +1168,42 @@ def delete_branch_protection(owner: str, repo: str, name: str):
         _get_client().delete(f"/repos/{owner}/{repo}/branch_protections/{name}")
     )
 
+@_op(gitea_write)
+def rename_branch(
+    owner: str,
+    repo: str,
+    branch: Annotated[str, Field(description="Current name of the branch to rename.")],
+    new_name: Annotated[str, Field(description="New branch name. Renaming the default branch needs repo-admin rights; a protected branch refuses the rename.")],
+):
+    """Rename a branch. Open pull requests and the repo's default-branch setting follow the new name."""
+    return _call(
+        "PATCH",
+        "/repos/{owner}/{repo}/branches/{branch}",
+        locals(),
+        rename={"new_name": "name"},
+    )
+
+@_op(gitea_write)
+def update_branch(
+    owner: str,
+    repo: str,
+    branch: Annotated[str, Field(description="Name of the branch to move.")],
+    new_commit_id: Annotated[str, Field(description="Commit SHA (or any ref Gitea can resolve) the branch should point to after the update.")],
+    old_commit_id: Annotated[str | None, Field(description="Expected current tip SHA of the branch. If given it must match, otherwise the update is rejected — optimistic concurrency against a concurrent push.")] = None,
+    force: Annotated[bool | None, Field(description="True = allow an update that is not a fast-forward (rewrites the branch's history).")] = None,
+):
+    """Update a branch reference to a new commit."""
+    return _call("PUT", "/repos/{owner}/{repo}/branches/{branch}", locals())
+
+@_op(gitea_write)
+def update_branch_protection_priorities(
+    owner: str,
+    repo: str,
+    ids: Annotated[list[int], Field(description="Branch protection rule IDs (int64) in the order they should be evaluated: the first id gets priority 1, the second 2, and so on. Rules left out of the list keep their current priority. NOTE: Gitea 1.27.3's branch-protection responses carry `priority` but not the rule id, so these ids come from the rule's web-UI URL, not from list_branch_protections.")],
+):
+    """Update the priorities of branch protections for a repository. The lowest priority wins when several rules match a branch."""
+    return _call("POST", "/repos/{owner}/{repo}/branch_protections/priority", locals())
+
 # ── Tag Protections ──────────────────────────────────────────────────────
 
 
@@ -1054,6 +1252,24 @@ def delete_tag_protection(owner: str, repo: str, tag_protection_id: int):
             f"/repos/{owner}/{repo}/tag_protections/{tag_protection_id}"
         )
     )
+
+@_op(gitea_read)
+def get_tag(
+    owner: str,
+    repo: str,
+    tag: Annotated[str, Field(description="Tag NAME as shown by list_tags (e.g. 'v1.2.0') — not a SHA.")],
+):
+    """Get the tag of a repository by tag name. Works for both lightweight and annotated tags."""
+    return _call("GET", "/repos/{owner}/{repo}/tags/{tag}", locals())
+
+@_op(gitea_read)
+def get_annotated_tag(
+    owner: str,
+    repo: str,
+    sha: Annotated[str, Field(description="SHA of the TAG OBJECT — the `id` of an annotated tag from get_tag / list_tags. Lightweight tags have no tag object and 404 here.")],
+):
+    """Get the tag object of an annotated tag (not a lightweight tag), including its message, tagger and signature verification."""
+    return _call("GET", "/repos/{owner}/{repo}/git/tags/{sha}", locals())
 
 # ── Commits and Statuses ────────────────────────────────────────────────────
 
