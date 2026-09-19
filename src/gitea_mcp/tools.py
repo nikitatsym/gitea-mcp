@@ -2678,9 +2678,43 @@ def list_pull_requests(
     return _ok(data)
 
 @_op(gitea_read)
+def list_pinned_pull_requests(
+    owner: str,
+    repo: str,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea PR objects.")] = True,
+):
+    """List a repository's pinned pull requests.
+
+    Pinned PRs are the ones maintainers stuck to the top of the repo's PR list;
+    the set is small and always returned whole.
+
+    brief (default True): compact view — number, title, state, labels, assignees,
+    updated_at, and body summary extracted from a <brief>...</brief> tag.
+    Set brief=False for full Gitea API response objects."""
+    # Unpaginated endpoint: Gitea ignores page/limit here and returns everything.
+    data = _get_client().get(f"/repos/{owner}/{repo}/pulls/pinned")
+    if brief:
+        data = _slim_issues(data)
+    return _ok(data)
+
+@_op(gitea_read)
 def get_pull_request(owner: str, repo: str, index: int):
     """Get a pull request by index."""
     return _call("GET", "/repos/{owner}/{repo}/pulls/{index}", locals())
+
+@_op(gitea_read)
+def get_pull_request_by_base_head(
+    owner: str,
+    repo: str,
+    base: Annotated[str, Field(description="Base branch name — the branch the PR merges INTO, e.g. 'main'. A branch name, never a PR index.")],
+    head: Annotated[str, Field(description="Head branch name — the branch the PR merges FROM. For a PR opened from a fork use 'forkOwner:branch' (or 'forkOwner/forkRepo:branch'), the same spelling create_pull_request takes.")],
+):
+    """Get a pull request by its base and head branch instead of its index.
+
+    Matches the PR whose base_branch and head_branch are exactly these, in any
+    state (open, closed or merged); 404 when no PR connects the two branches.
+    Use it to find the PR for a branch you just pushed without listing PRs."""
+    return _call("GET", "/repos/{owner}/{repo}/pulls/{base}/{head}", locals())
 
 @_op(gitea_write)
 def create_pull_request(
@@ -2735,6 +2769,28 @@ def merge_pull_request(
     return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/merge", locals(), rename={"merge_type": "do", "merge_message": "merge_message_field"})
 
 @_op(gitea_read)
+def check_pull_request_merged(owner: str, repo: str, index: int):
+    """Check whether a pull request has already been merged.
+
+    Gitea answers this one with status only: a body-less 204 when the PR IS
+    merged, a 404 when it is not (or does not exist). There is therefore no
+    payload to return — a successful call, reported as {"status": "ok"},
+    means merged, and a Gitea 404 error means not merged. When you want the
+    answer as a value rather than as an error, read the `merged` field of
+    get_pull_request instead."""
+    return _call("GET", "/repos/{owner}/{repo}/pulls/{index}/merge", locals())
+
+@_op(gitea_execute)
+def cancel_scheduled_auto_merge(owner: str, repo: str, index: int):
+    """Cancel the auto-merge scheduled for a pull request.
+
+    Undoes a merge scheduled with Gitea's `merge_when_checks_succeed` option:
+    the PR stays open and is no longer merged on its own once checks go green.
+    Merging already done is not undone by this. 404 when no auto-merge is
+    scheduled for the PR."""
+    return _call("DELETE", "/repos/{owner}/{repo}/pulls/{index}/merge", locals())
+
+@_op(gitea_read)
 def get_pull_request_diff(owner: str, repo: str, index: int):
     """Get the diff of a pull request."""
     return _get_client().get_text(f"/repos/{owner}/{repo}/pulls/{index}.diff")
@@ -2777,6 +2833,16 @@ def list_pull_reviews(owner: str, repo: str, index: int):
     return _ok(
         _get_client().paginate(f"/repos/{owner}/{repo}/pulls/{index}/reviews")
     )
+
+@_op(gitea_read)
+def get_pull_review(
+    owner: str,
+    repo: str,
+    index: int,
+    review_id: Annotated[int, Field(description="Review ID (int64) from list_pull_reviews — NOT the PR index and NOT a review comment id.")],
+):
+    """Get one review on a pull request, with its state, body and reviewer."""
+    return _call("GET", "/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}", locals())
 
 @_op(gitea_write)
 def create_pull_review(
@@ -2833,6 +2899,68 @@ def dismiss_pull_review(
 ):
     """Dismiss a pull request review."""
     return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}/dismissals", locals())
+
+@_op(gitea_write)
+def undismiss_pull_review(
+    owner: str,
+    repo: str,
+    index: int,
+    review_id: Annotated[int, Field(description="Review ID (int64) from list_pull_reviews — the dismissed review to restore.")],
+):
+    """Undo the dismissal of a pull request review.
+
+    Reverse of dismiss_pull_review: the review counts again toward approvals or
+    change requests. Returns the restored review."""
+    return _ok(
+        _get_client().post(
+            f"/repos/{owner}/{repo}/pulls/{index}/reviews/{review_id}/undismissals"
+        )
+    )
+
+@_op(gitea_write)
+def reply_to_pull_review_comment(
+    owner: str,
+    repo: str,
+    index: int,
+    comment_id: Annotated[int, Field(description="Review COMMENT ID (int64) from get_pull_review_comments — the inline comment being replied to, NOT the review id.")],
+    body: Annotated[str, Field(description="Reply text as markdown.")],
+):
+    """Reply to an inline review comment on a pull request.
+
+    The reply joins the same thread as `comment_id` — same review, same file and
+    line — so this is how to answer a reviewer in place rather than opening a new
+    conversation. Gitea rejects a comment that is not a code review comment (400)
+    and a comment belonging to a different PR than `index` (404)."""
+    return _call("POST", "/repos/{owner}/{repo}/pulls/{index}/comments/{comment_id}/replies", locals())
+
+@_op(gitea_write)
+def resolve_pull_review_comment(
+    owner: str,
+    repo: str,
+    comment_id: Annotated[int, Field(description="Review COMMENT ID (int64) from get_pull_review_comments. The path carries no PR index — the comment id alone identifies the thread.")],
+):
+    """Mark a pull request review comment's conversation as resolved.
+
+    Resolving collapses the thread in the UI. Needs permission to mark
+    conversations (PR author or repo write access), else 403; 400 when the id
+    is not an inline code review comment."""
+    return _ok(
+        _get_client().post(f"/repos/{owner}/{repo}/pulls/comments/{comment_id}/resolve")
+    )
+
+@_op(gitea_write)
+def unresolve_pull_review_comment(
+    owner: str,
+    repo: str,
+    comment_id: Annotated[int, Field(description="Review COMMENT ID (int64) from get_pull_review_comments. The path carries no PR index — the comment id alone identifies the thread.")],
+):
+    """Reopen a resolved pull request review comment's conversation.
+
+    Reverse of resolve_pull_review_comment, and a POST like it rather than a
+    delete — nothing is removed, the thread just counts as unresolved again."""
+    return _ok(
+        _get_client().post(f"/repos/{owner}/{repo}/pulls/comments/{comment_id}/unresolve")
+    )
 
 # ── Actions / CI ─────────────────────────────────────────────────────────────
 
