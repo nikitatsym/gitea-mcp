@@ -1986,6 +1986,8 @@ def dismiss_pull_review(
 # ── Actions / CI ─────────────────────────────────────────────────────────────
 
 
+_ActionRunStatus = Annotated[Literal["pending", "waiting", "requested", "action_required", "queued", "in_progress", "completed", "failure", "success", "skipped", "neutral", "cancelled", "timed_out"] | None, Field(description="Keep only entries in this state. Several names map onto one internal status: 'pending'/'waiting'/'requested'/'action_required' = blocked, 'queued' = waiting for a runner, 'in_progress' = running, 'skipped'/'neutral' = skipped, 'cancelled'/'timed_out' = cancelled, and 'completed' = any of success/failure/skipped/cancelled. Any other value is rejected with 400.")]
+
 @_op(gitea_read)
 def list_workflows(owner: str, repo: str):
     """List workflows in a repository."""
@@ -1997,6 +1999,62 @@ def get_workflow(owner: str, repo: str, workflow_id: str):
     return _ok(
         _get_client().get(f"/repos/{owner}/{repo}/actions/workflows/{workflow_id}")
     )
+
+@_op(gitea_write)
+def enable_workflow(
+    owner: str,
+    repo: str,
+    workflow_id: Annotated[str, Field(description="Workflow file name under .gitea/workflows/ (e.g. 'ci.yml') or its numeric ID — the same value get_workflow takes.")],
+):
+    """Enable a disabled workflow so its triggers fire again. Returns {'status': 'ok'} (Gitea answers 204)."""
+    return _ok(
+        _get_client().put(
+            f"/repos/{owner}/{repo}/actions/workflows/{workflow_id}/enable"
+        )
+    )
+
+@_op(gitea_write)
+def disable_workflow(
+    owner: str,
+    repo: str,
+    workflow_id: Annotated[str, Field(description="Workflow file name under .gitea/workflows/ (e.g. 'ci.yml') or its numeric ID — the same value get_workflow takes.")],
+):
+    """Disable a workflow: its triggers stop firing until enable_workflow. Runs already in flight are untouched. Returns {'status': 'ok'} (Gitea answers 204)."""
+    return _ok(
+        _get_client().put(
+            f"/repos/{owner}/{repo}/actions/workflows/{workflow_id}/disable"
+        )
+    )
+
+@_op(gitea_read)
+def list_runs_for_workflow(
+    owner: str,
+    repo: str,
+    workflow_id: Annotated[str, Field(description="Workflow file name under .gitea/workflows/ (e.g. 'ci.yml') or its numeric ID — the same value get_workflow takes.")],
+    event: Annotated[str | None, Field(description="Keep only runs triggered by this event name, e.g. 'push', 'pull_request', 'workflow_dispatch', 'schedule'.")] = None,
+    branch: Annotated[str | None, Field(description="Keep only runs whose head branch is this branch name (bare name, no 'refs/heads/' prefix).")] = None,
+    status: _ActionRunStatus = None,
+    actor: Annotated[str | None, Field(description="USERNAME of the user who triggered the run (NOT a display name, NOT a user ID).")] = None,
+    head_sha: Annotated[str | None, Field(description="Full commit SHA the run was triggered for (40 hex chars, not abbreviated).")] = None,
+    exclude_pull_requests: Annotated[bool | None, Field(description="True empties the `pull_requests` field of every returned run — a smaller payload when the PR links are not needed.")] = None,
+    scoped_workflow_source_repo_id: Annotated[int | None, Field(description="For a scoped workflow, the int64 ID of the repository that provides it. Omit (or pass 0) for a workflow defined in this repo.")] = None,
+    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = 20,
+    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-run objects.")] = True,
+):
+    """List runs of one workflow (list_workflow_runs is the whole-repo equivalent).
+
+    brief (default True): compact view — id, title, status, conclusion,
+    event, branch, sha, run_number, path, timestamps.
+    Set brief=False for full Gitea API response objects."""
+    params = _body(locals(), exclude=("owner", "repo", "workflow_id", "brief"))
+    data = _get_client().get(
+        f"/repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
+        params=params or None,
+    )
+    if brief:
+        data = _slim_workflow_runs(data)
+    return _ok(data)
 
 @_op(gitea_execute)
 def dispatch_workflow(
@@ -2074,6 +2132,189 @@ def get_workflow_job_logs(
     if tail and tail > 0:
         lines = lines[-tail:]
     return "\n".join(lines)
+
+@_op(gitea_delete)
+def delete_workflow_run(
+    owner: str,
+    repo: str,
+    run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number). The run must already be finished — Gitea returns 400 for a run still in flight.")],
+):
+    """Delete a finished workflow run and everything hanging off it (jobs, logs, artifacts)."""
+    return _call("DELETE", "/repos/{owner}/{repo}/actions/runs/{run_id}", locals())
+
+@_op(gitea_read)
+def get_workflow_run_attempt(
+    owner: str,
+    repo: str,
+    run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
+    attempt: Annotated[int, Field(description="Logical attempt number within the run, 1-based: 1 is the original run, 2 the first rerun, and so on. A run's `previous_attempt_url` names the attempt before the current one.")],
+):
+    """Get one attempt of a workflow run — the state of that run as of that rerun."""
+    return _ok(_slim_workflow_run(
+        _get_client().get(f"/repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt}")
+    ))
+
+@_op(gitea_read)
+def list_workflow_run_attempt_jobs(
+    owner: str,
+    repo: str,
+    run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
+    attempt: Annotated[int, Field(description="Logical attempt number within the run, 1-based: 1 is the original run, 2 the first rerun, and so on.")],
+    status: _ActionRunStatus = None,
+    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = 20,
+    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea job objects.")] = True,
+):
+    """List the jobs of one attempt of a workflow run.
+
+    list_workflow_run_jobs returns the run's current jobs; this one is pinned
+    to a single attempt, so an earlier attempt's jobs stay reachable after a
+    rerun. brief (default True): id, name, status, conclusion, run_id,
+    timestamps, per-step status."""
+    params = _body(locals(), exclude=("owner", "repo", "run_id", "attempt", "brief"))
+    data = _get_client().get(
+        f"/repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs",
+        params=params or None,
+    )
+    if brief:
+        data = _slim_jobs(data)
+    return _ok(data)
+
+@_op(gitea_read)
+def list_workflow_jobs(
+    owner: str,
+    repo: str,
+    status: _ActionRunStatus = None,
+    sort: Annotated[Literal["id"] | None, Field(description="Sort key. Gitea supports only 'id' here (job creation order); omitted = 'id'.")] = None,
+    order: Annotated[Literal["asc", "desc"] | None, Field(description="Sort direction. Omitted = 'asc'.")] = None,
+    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = 20,
+    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
+    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea job objects.")] = True,
+):
+    """List jobs across every workflow run in a repository.
+
+    Repo-wide, unlike list_workflow_run_jobs which is scoped to one run — use
+    this to find e.g. every failing job without walking the runs first.
+    brief (default True): id, name, status, conclusion, run_id, timestamps,
+    per-step status."""
+    params = _body(locals(), exclude=("owner", "repo", "brief"))
+    data = _get_client().get(
+        f"/repos/{owner}/{repo}/actions/jobs", params=params or None
+    )
+    if brief:
+        data = _slim_jobs(data)
+    return _ok(data)
+
+@_op(gitea_execute)
+def rerun_workflow_run(
+    owner: str,
+    repo: str,
+    run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
+):
+    """Rerun every job of a workflow run. Starts a new attempt; returns the run it queued."""
+    return _ok(_get_client().post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun"))
+
+@_op(gitea_execute)
+def rerun_failed_workflow_jobs(
+    owner: str,
+    repo: str,
+    run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
+):
+    """Rerun only the failed jobs of a workflow run.
+
+    Gitea returns 400 when the run has no failed job to rerun. The response
+    body is empty, so this returns {'status': 'ok'} — poll get_workflow_run
+    for the new attempt."""
+    return _ok(
+        _get_client().post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs")
+    )
+
+@_op(gitea_execute)
+def rerun_workflow_job(
+    owner: str,
+    repo: str,
+    run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
+    job_id: Annotated[int, Field(description="Job ID from list_workflow_run_jobs — must belong to `run_id`, otherwise Gitea returns 404.")],
+):
+    """Rerun one job of a workflow run. Returns the rerun job of the new attempt."""
+    return _ok(_slim_job(
+        _get_client().post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs/{job_id}/rerun")
+    ))
+
+@_op(gitea_read)
+def list_action_artifacts(
+    owner: str,
+    repo: str,
+    name: Annotated[str | None, Field(description="Keep only artifacts with exactly this name (the `name:` of the upload-artifact step). Omitted = every artifact in the repo.")] = None,
+):
+    """List the artifacts of a repository, newest runs included.
+
+    Only v4 (finalized) artifacts are listed; artifacts written by the
+    legacy v3 uploader are invisible to this API."""
+    return _call("GET", "/repos/{owner}/{repo}/actions/artifacts", locals())
+
+@_op(gitea_read)
+def list_workflow_run_artifacts(
+    owner: str,
+    repo: str,
+    run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
+    name: Annotated[str | None, Field(description="Keep only artifacts with exactly this name (the `name:` of the upload-artifact step). Omitted = every artifact of the run.")] = None,
+):
+    """List the artifacts produced by one workflow run."""
+    return _call("GET", "/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts", locals())
+
+@_op(gitea_read)
+def get_action_artifact(
+    owner: str,
+    repo: str,
+    artifact_id: Annotated[int, Field(description="Artifact ID from list_action_artifacts / list_workflow_run_artifacts (NOT the artifact name).")],
+):
+    """Get one artifact's metadata: name, size, expiry, and its download URL."""
+    return _call("GET", "/repos/{owner}/{repo}/actions/artifacts/{artifact_id}", locals())
+
+@_op(gitea_read)
+def download_action_artifact(
+    owner: str,
+    repo: str,
+    artifact_id: Annotated[int, Field(description="Artifact ID from list_action_artifacts / list_workflow_run_artifacts (NOT the artifact name).")],
+):
+    """Download an artifact's zip, returned base64-encoded under `zip_base64`.
+
+    Gitea answers this endpoint with a 302 to a short-lived signed URL, which
+    may live on a different host (object storage) than the API; the redirect is
+    followed and the signature in that URL is what authenticates the second
+    hop. An expired artifact still has metadata but no content."""
+    data = _get_client().download(
+        f"/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip"
+    )
+    return {
+        "artifact_id": artifact_id,
+        "size_in_bytes": len(data),
+        "zip_base64": base64.b64encode(data).decode(),
+    }
+
+@_op(gitea_delete)
+def delete_action_artifact(
+    owner: str,
+    repo: str,
+    artifact_id: Annotated[int, Field(description="Artifact ID from list_action_artifacts / list_workflow_run_artifacts (NOT the artifact name).")],
+):
+    """Delete one artifact of a workflow run. The run and its logs are untouched."""
+    return _call("DELETE", "/repos/{owner}/{repo}/actions/artifacts/{artifact_id}", locals())
+
+@_op(gitea_read)
+def list_action_tasks(
+    owner: str,
+    repo: str,
+    limit: Annotated[int | None, Field(description="Page size. Gitea caps this at 50.")] = 20,
+    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
+):
+    """List a repository's action tasks — the runner-side units behind its runs.
+
+    Returned under the key `workflow_runs` (Gitea reuses the run wrapper), with
+    `total_count`. Not slimmed: a task carries runner and timing fields a run
+    does not."""
+    return _call("GET", "/repos/{owner}/{repo}/actions/tasks", locals())
 
 @_op(gitea_read)
 def list_action_secrets(owner: str, repo: str):
@@ -2778,6 +3019,16 @@ def list_repo_runners(owner: str, repo: str):
 def get_repo_runner(owner: str, repo: str, runner_id: int):
     """Get an action runner for a repository."""
     return _ok(_get_client().get(f"/repos/{owner}/{repo}/actions/runners/{runner_id}"))
+
+@_op(gitea_write)
+def update_repo_runner(
+    owner: str,
+    repo: str,
+    runner_id: Annotated[int, Field(description="Runner ID from list_repo_runners (NOT the runner name).")],
+    disabled: Annotated[bool, Field(description="True takes the runner out of rotation — it keeps its registration but is handed no new jobs. False puts it back.")],
+):
+    """Enable or disable a repo-level action runner."""
+    return _call("PATCH", "/repos/{owner}/{repo}/actions/runners/{runner_id}", locals())
 
 @_op(gitea_delete)
 def delete_repo_runner(owner: str, repo: str, runner_id: int):
