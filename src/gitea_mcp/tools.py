@@ -1640,6 +1640,20 @@ def get_release(owner: str, repo: str, release_id: int):
     """Get a release by ID."""
     return _call("GET", "/repos/{owner}/{repo}/releases/{release_id}", locals())
 
+@_op(gitea_read)
+def get_latest_release(owner: str, repo: str):
+    """Get the most recent published release — the newest by created_at that is neither a draft nor a prerelease."""
+    return _call("GET", "/repos/{owner}/{repo}/releases/latest", locals())
+
+@_op(gitea_read)
+def get_release_by_tag(
+    owner: str,
+    repo: str,
+    tag: Annotated[str, Field(description="Git tag name of the release (e.g. 'v1.2.0') from list_tags or the tag_name of list_releases — NOT the numeric release id.")],
+):
+    """Get a release by its git tag name. Returns 404 for a bare tag that has no release attached."""
+    return _call("GET", "/repos/{owner}/{repo}/releases/tags/{tag}", locals())
+
 @_op(gitea_write)
 def create_release(
     owner: str,
@@ -1673,6 +1687,76 @@ def edit_release(
 def delete_release(owner: str, repo: str, release_id: int):
     """Delete a release by ID."""
     return _call("DELETE", "/repos/{owner}/{repo}/releases/{release_id}", locals())
+
+@_op(gitea_delete)
+def delete_release_by_tag(
+    owner: str,
+    repo: str,
+    tag: Annotated[str, Field(description="Git tag name of the release to delete (e.g. 'v1.2.0'), from list_tags or the tag_name of list_releases — NOT the numeric release id.")],
+):
+    """Delete a release addressed by its git tag name rather than its id (contrast delete_release, which takes release_id).
+
+    Deletes the release and its attachments but KEEPS the git tag — the tag
+    stays listed by list_tags. Use delete_tag to remove the tag itself."""
+    return _call("DELETE", "/repos/{owner}/{repo}/releases/tags/{tag}", locals())
+
+@_op(gitea_read)
+def list_release_attachments(owner: str, repo: str, release_id: int):
+    """List a release's attachments (the downloadable assets under /releases/{id}/assets)."""
+    return _call("GET", "/repos/{owner}/{repo}/releases/{release_id}/assets", locals())
+
+@_op(gitea_read)
+def get_release_attachment(
+    owner: str,
+    repo: str,
+    release_id: int,
+    attachment_id: Annotated[int, Field(description="Attachment ID (int64) from list_release_attachments — NOT the filename and NOT the uuid.")],
+):
+    """Get one release attachment's metadata (name, size, download count, browser_download_url)."""
+    return _call("GET", "/repos/{owner}/{repo}/releases/{release_id}/assets/{attachment_id}", locals())
+
+@_op(gitea_write)
+def create_release_attachment(
+    owner: str,
+    repo: str,
+    release_id: int,
+    name: Annotated[str, Field(description="Filename the attachment is published under, e.g. 'gitea-mcp-1.0.0.tar.gz'. Gitea may reject extensions its attachment allowlist forbids (400).")],
+    content: Annotated[str, Field(description="Base64-encoded file content. An MCP client cannot send raw bytes, so encode the file first; it is decoded here and uploaded as multipart/form-data.")],
+):
+    """Upload a file as an attachment on a release.
+
+    Sent as multipart/form-data under the `attachment` field, with `name` as
+    the published filename. Oversized files are rejected by Gitea with 413."""
+    return _ok(
+        _get_client().upload(
+            f"/repos/{owner}/{repo}/releases/{release_id}/assets",
+            "attachment",
+            name,
+            base64.b64decode(content),
+            params={"name": name},
+        )
+    )
+
+@_op(gitea_write)
+def edit_release_attachment(
+    owner: str,
+    repo: str,
+    release_id: int,
+    attachment_id: Annotated[int, Field(description="Attachment ID (int64) from list_release_attachments — NOT the filename and NOT the uuid.")],
+    name: Annotated[str | None, Field(description="New filename for the attachment. This is the only editable field; the uploaded bytes cannot be replaced — delete and re-upload instead.")] = None,
+):
+    """Rename a release attachment."""
+    return _call("PATCH", "/repos/{owner}/{repo}/releases/{release_id}/assets/{attachment_id}", locals())
+
+@_op(gitea_delete)
+def delete_release_attachment(
+    owner: str,
+    repo: str,
+    release_id: int,
+    attachment_id: Annotated[int, Field(description="Attachment ID (int64) from list_release_attachments — NOT the filename and NOT the uuid.")],
+):
+    """Delete a release attachment. The stored file is removed; the release itself is untouched."""
+    return _call("DELETE", "/repos/{owner}/{repo}/releases/{release_id}/assets/{attachment_id}", locals())
 
 # ── Labels ───────────────────────────────────────────────────────────────────
 
