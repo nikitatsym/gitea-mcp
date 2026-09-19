@@ -575,6 +575,27 @@ def _basic_auth_request(method: str, path: str, username: str, password: str, js
     return r.json() if r.content else None
 
 
+def _basic_auth_identity(username: str | None, password: str | None, scope: str):
+    """Resolve the (user, password) pair the /users/{username}/tokens ops call with.
+
+    Both halves default: the user from `/user`, the password from GITEA_TOKEN.
+    Gitea's Basic.Verify accepts a PAT in the password field when the token
+    carries `scope` (or `all`), which is why a token works where the endpoint
+    asks for a password. `scope` only shapes the error message - it is the
+    instance, not this code, that enforces it.
+    """
+    pwd = password or get_settings().gitea_token
+    user = username
+    if not user:
+        user = (_get_client().get("/user") or {}).get("login")
+    if not user or not pwd:
+        raise ValueError(
+            "username/password unresolved - pass them as args, or ensure "
+            f"GITEA_TOKEN is set and has {scope} (or all) scope"
+        )
+    return user, pwd
+
+
 @_op(gitea_write)
 def create_user_access_token(
     name: Annotated[str, Field(description="Human-readable token name (shown in user's token list).")],
@@ -597,17 +618,7 @@ def create_user_access_token(
 
     The response's `sha1` field is the raw token — Gitea will not show it again.
     """
-    s = get_settings()
-    pwd = password or s.gitea_token
-    user = username
-    if not user:
-        me = _get_client().get("/user") or {}
-        user = me.get("login")
-    if not user or not pwd:
-        raise ValueError(
-            "username/password unresolved — pass them as args, or ensure "
-            "GITEA_TOKEN is set and has write:user (or all) scope"
-        )
+    user, pwd = _basic_auth_identity(username, password, "write:user")
     return _ok(
         _basic_auth_request(
             "POST",
@@ -633,17 +644,7 @@ def list_user_access_tokens(
     Use the returned `id` as the `token` argument of
     delete_user_access_token. The Basic-auth path sends no page/limit, so
     this returns Gitea's first page at the server's default page size."""
-    s = get_settings()
-    pwd = password or s.gitea_token
-    user = username
-    if not user:
-        me = _get_client().get("/user") or {}
-        user = me.get("login")
-    if not user or not pwd:
-        raise ValueError(
-            "username/password unresolved — pass them as args, or ensure "
-            "GITEA_TOKEN is set and has read:user (or all) scope"
-        )
+    user, pwd = _basic_auth_identity(username, password, "read:user")
     return _ok(_basic_auth_request("GET", f"/users/{user}/tokens", user, pwd))
 
 @_op(gitea_delete)
@@ -659,17 +660,7 @@ def delete_user_access_token(
     Defaults to the authenticated user with `GITEA_TOKEN` as the Basic
     password. Deleting the token currently configured as `GITEA_TOKEN`
     locks this MCP server out of the instance."""
-    s = get_settings()
-    pwd = password or s.gitea_token
-    user = username
-    if not user:
-        me = _get_client().get("/user") or {}
-        user = me.get("login")
-    if not user or not pwd:
-        raise ValueError(
-            "username/password unresolved — pass them as args, or ensure "
-            "GITEA_TOKEN is set and has write:user (or all) scope"
-        )
+    user, pwd = _basic_auth_identity(username, password, "write:user")
     return _ok(_basic_auth_request("DELETE", f"/users/{user}/tokens/{token}", user, pwd))
 
 # ── SSH / GPG Keys ──────────────────────────────────────────────────────────
@@ -2243,6 +2234,13 @@ def delete_milestone(owner: str, repo: str, milestone_id: int):
 
 # ── Issues ───────────────────────────────────────────────────────────────────
 
+_IssuesBrief = Annotated[bool, Field(description=(
+    "True (default) = compact slim view: number, title, state, labels, assignees, "
+    "updated_at, and the body's <brief>...</brief> summary (null when the body "
+    "carries no such tag - get_issue shows the whole body, edit_issue can add the "
+    "tag). False = full Gitea issue objects."
+))]
+
 
 @_op(gitea_read)
 def list_issues(
@@ -2260,15 +2258,9 @@ def list_issues(
     type: Annotated[Literal["issues", "pulls"] | None, Field(description="'issues' = exclude PRs, 'pulls' = only PRs. Omit to include both.")] = None,
     page: int | None = None,
     limit: int | None = 20,
-    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea issue objects.")] = True,
+    brief: _IssuesBrief = True,
 ):
-    """List issues in a repository. Type can be 'issues' or 'pulls'.
-
-    brief (default True): compact view — number, title, state, labels, assignees,
-    updated_at, and body summary extracted from a <brief>...</brief> tag.
-    If brief is null for an issue, use get_issue for full details or edit_issue
-    to add <brief>short summary</brief> to its body for convenient list views.
-    Set brief=False for full Gitea API response objects."""
+    """List issues in a repository. Type can be 'issues' or 'pulls'."""
     params: dict = {"limit": limit}
     if state is not None:
         params["state"] = state
@@ -2291,16 +2283,12 @@ def list_issues(
 def list_pinned_issues(
     owner: str,
     repo: str,
-    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea issue objects.")] = True,
+    brief: _IssuesBrief = True,
 ):
     """List a repository's pinned issues, in pin order.
 
     Pull requests are pinned separately and are not returned here. The
-    endpoint takes no paging: Gitea caps the number of pins per repo.
-
-    brief (default True): compact view — number, title, state, labels,
-    assignees, updated_at, and the <brief>...</brief> body summary.
-    Set brief=False for full Gitea API response objects."""
+    endpoint takes no paging: Gitea caps the number of pins per repo."""
     data = _get_client().get(f"/repos/{owner}/{repo}/issues/pinned")
     if brief:
         data = _slim_issues(data)
@@ -2318,15 +2306,9 @@ def search_issues(
     type: Annotated[Literal["issues", "pulls"] | None, Field(description="'issues' = exclude PRs, 'pulls' = only PRs. Omit to include both.")] = None,
     limit: int | None = 20,
     page: int | None = None,
-    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea issue objects.")] = True,
+    brief: _IssuesBrief = True,
 ):
-    """Search issues across repositories.
-
-    brief (default True): slim per-issue view (number, title, state, labels,
-    assignee, updated_at, plus a summary pulled from a <brief>...</brief> tag
-    in the body). A null brief means the body has no such tag: get_issue shows
-    the full issue, edit_issue can add the tag. brief=False returns the full
-    Gitea API objects."""
+    """Search issues across repositories."""
     params: dict = {"q": query, "limit": limit}
     if owner is not None:
         params["owner"] = owner
@@ -2709,16 +2691,12 @@ def list_issue_blocks(
     owner: str,
     repo: str,
     index: int,
-    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea issue objects.")] = True,
+    brief: _IssuesBrief = True,
 ):
     """List the issues this issue blocks — the reverse of list_issue_dependencies.
 
     Those issues cannot be closed until this one is. Dependencies are the
-    other direction: issues that must close before this one can.
-
-    brief (default True): compact view — number, title, state, labels,
-    assignees, updated_at, and the <brief>...</brief> body summary.
-    Set brief=False for full Gitea API response objects."""
+    other direction: issues that must close before this one can."""
     data = _get_client().paginate(f"/repos/{owner}/{repo}/issues/{index}/blocks")
     if brief:
         data = _slim_issues(data)
@@ -2864,14 +2842,20 @@ def get_issue_attachment(
     to get the content."""
     return _call("GET", "/repos/{owner}/{repo}/issues/{index}/assets/{attachment_id}", locals())
 
+# Issue and issue-comment attachments take the same multipart trio; Gitea's two
+# endpoints differ only in what the file hangs off.
+_AttachmentFilename = Annotated[str, Field(description="Filename to send in the multipart part, e.g. 'trace.log'. Used as the display name when `name` is omitted.")]
+_AttachmentContent = Annotated[str, Field(description="Base64-encoded file content. An MCP client cannot send raw bytes, so encode first; the op decodes before upload.")]
+_AttachmentName = Annotated[str | None, Field(description="Display name to store the attachment under, overriding `filename`. Sent as a QUERY param, per Gitea's spec.")]
+
 @_op(gitea_write)
 def create_issue_attachment(
     owner: str,
     repo: str,
     index: int,
-    filename: Annotated[str, Field(description="Filename to send in the multipart part, e.g. 'trace.log'. Used as the display name when `name` is omitted.")],
-    content: Annotated[str, Field(description="Base64-encoded file content. An MCP client cannot send raw bytes, so encode first; the op decodes before upload.")],
-    name: Annotated[str | None, Field(description="Display name to store the attachment under, overriding `filename`. Sent as a QUERY param, per Gitea's spec.")] = None,
+    filename: _AttachmentFilename,
+    content: _AttachmentContent,
+    name: _AttachmentName = None,
 ):
     """Attach a file to an issue. Content is sent base64-encoded and decoded here."""
     # `name` is a query param and must vanish when omitted, so the params dict
@@ -2935,9 +2919,9 @@ def create_issue_comment_attachment(
     owner: str,
     repo: str,
     comment_id: Annotated[int, Field(description="Comment ID (int64) from list_issue_comments — NOT the issue index.")],
-    filename: Annotated[str, Field(description="Filename to send in the multipart part, e.g. 'trace.log'. Used as the display name when `name` is omitted.")],
-    content: Annotated[str, Field(description="Base64-encoded file content. An MCP client cannot send raw bytes, so encode first; the op decodes before upload.")],
-    name: Annotated[str | None, Field(description="Display name to store the attachment under, overriding `filename`. Sent as a QUERY param, per Gitea's spec.")] = None,
+    filename: _AttachmentFilename,
+    content: _AttachmentContent,
+    name: _AttachmentName = None,
 ):
     """Attach a file to an issue comment. Content is sent base64-encoded and decoded here."""
     # `name` is a query param and must vanish when omitted, so the params dict
@@ -3497,7 +3481,33 @@ def unresolve_pull_review_comment(
 # ── Actions / CI ─────────────────────────────────────────────────────────────
 
 
-_ActionRunStatus = Annotated[Literal["pending", "waiting", "requested", "action_required", "queued", "in_progress", "completed", "failure", "success", "skipped", "neutral", "cancelled", "timed_out"] | None, Field(description="Keep only entries in this state. Several names map onto one internal status: 'pending'/'waiting'/'requested'/'action_required' = blocked, 'queued' = waiting for a runner, 'in_progress' = running, 'skipped'/'neutral' = skipped, 'cancelled'/'timed_out' = cancelled, and 'completed' = any of success/failure/skipped/cancelled. Any other value is rejected with 400.")]
+# Actions listings share one filter vocabulary across the repo-, org-, user-
+# and admin-scoped endpoints: the same query params, the same meanings. They
+# are named once here so a description is written (and corrected) in one place.
+#
+# `status` is one of Gitea's GitHub-compatible aliases; several collapse onto
+# the same internal state (pending/waiting/requested/action_required, and
+# skipped/neutral, and cancelled/timed_out), and `completed` matches every
+# finished state. Anything else is rejected with 400.
+_ActionStatusFilter = Annotated[
+    Literal[
+        "pending", "waiting", "requested", "action_required", "queued",
+        "in_progress", "completed", "failure", "success", "skipped",
+        "neutral", "cancelled", "timed_out",
+    ] | None,
+    Field(description="Filter by run/job status. 'completed' matches success, failure, skipped and cancelled together. Omit for all statuses."),
+]
+_ActionRunEvent = Annotated[str | None, Field(description="Triggering webhook event name, e.g. 'push', 'pull_request', 'workflow_dispatch', 'schedule'.")]
+_ActionRunBranch = Annotated[str | None, Field(description="Branch name the run was triggered on (bare name, e.g. 'main' - NOT 'refs/heads/main').")]
+_ActionRunActor = Annotated[str | None, Field(description="USERNAME that triggered the run (NOT a user ID / display name). Unknown usernames yield an empty result.")]
+_ActionRunHeadSha = Annotated[str | None, Field(description="Full commit SHA the run was triggered on.")]
+_ActionPage = Annotated[int | None, Field(description="1-based page number.")]
+_ActionLimit = Annotated[int | None, Field(description="Page size. Server default if omitted.")]
+_ActionRunsBrief = Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-run objects.")]
+_ActionJobsBrief = Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-job objects.")]
+_ActionJobSort = Annotated[Literal["id"] | None, Field(description="Sort key. Gitea supports only 'id' here (job creation order); omitted = 'id'.")]
+_ActionJobOrder = Annotated[Literal["asc", "desc"] | None, Field(description="Sort direction. Omitted = 'asc'.")]
+_ActionRunnerDisabled = Annotated[bool, Field(description="True = take the runner out of service (it stops picking up jobs); False = re-enable it. Required - this is the only editable runner field.")]
 
 @_op(gitea_read)
 def list_workflows(owner: str, repo: str):
@@ -3542,16 +3552,16 @@ def list_runs_for_workflow(
     owner: str,
     repo: str,
     workflow_id: Annotated[str, Field(description="Workflow file name under .gitea/workflows/ (e.g. 'ci.yml') or its numeric ID — the same value get_workflow takes.")],
-    event: Annotated[str | None, Field(description="Keep only runs triggered by this event name, e.g. 'push', 'pull_request', 'workflow_dispatch', 'schedule'.")] = None,
-    branch: Annotated[str | None, Field(description="Keep only runs whose head branch is this branch name (bare name, no 'refs/heads/' prefix).")] = None,
-    status: _ActionRunStatus = None,
-    actor: Annotated[str | None, Field(description="USERNAME of the user who triggered the run (NOT a display name, NOT a user ID).")] = None,
-    head_sha: Annotated[str | None, Field(description="Full commit SHA the run was triggered for (40 hex chars, not abbreviated).")] = None,
-    exclude_pull_requests: Annotated[bool | None, Field(description="True empties the `pull_requests` field of every returned run — a smaller payload when the PR links are not needed.")] = None,
+    event: _ActionRunEvent = None,
+    branch: _ActionRunBranch = None,
+    status: _ActionStatusFilter = None,
+    actor: _ActionRunActor = None,
+    head_sha: _ActionRunHeadSha = None,
+    exclude_pull_requests: Annotated[bool | None, Field(description="True empties the `pull_requests` field of every returned run - a smaller payload when the PR links are not needed.")] = None,
     scoped_workflow_source_repo_id: Annotated[int | None, Field(description="For a scoped workflow, the int64 ID of the repository that provides it. Omit (or pass 0) for a workflow defined in this repo.")] = None,
-    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = 20,
-    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
-    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-run objects.")] = True,
+    limit: _ActionLimit = 20,
+    page: _ActionPage = 1,
+    brief: _ActionRunsBrief = True,
 ):
     """List runs of one workflow (list_workflow_runs is the whole-repo equivalent).
 
@@ -3588,9 +3598,9 @@ def dispatch_workflow(
 def list_workflow_runs(
     owner: str,
     repo: str,
-    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = 20,
-    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
-    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-run objects.")] = True,
+    limit: _ActionLimit = 20,
+    page: _ActionPage = 1,
+    brief: _ActionRunsBrief = True,
 ):
     """List workflow runs for a repository.
 
@@ -3671,10 +3681,10 @@ def list_workflow_run_attempt_jobs(
     repo: str,
     run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
     attempt: Annotated[int, Field(description="Logical attempt number within the run, 1-based: 1 is the original run, 2 the first rerun, and so on.")],
-    status: _ActionRunStatus = None,
-    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = 20,
-    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
-    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea job objects.")] = True,
+    status: _ActionStatusFilter = None,
+    limit: _ActionLimit = 20,
+    page: _ActionPage = 1,
+    brief: _ActionJobsBrief = True,
 ):
     """List the jobs of one attempt of a workflow run.
 
@@ -3695,12 +3705,12 @@ def list_workflow_run_attempt_jobs(
 def list_workflow_jobs(
     owner: str,
     repo: str,
-    status: _ActionRunStatus = None,
-    sort: Annotated[Literal["id"] | None, Field(description="Sort key. Gitea supports only 'id' here (job creation order); omitted = 'id'.")] = None,
-    order: Annotated[Literal["asc", "desc"] | None, Field(description="Sort direction. Omitted = 'asc'.")] = None,
-    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = 20,
-    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
-    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea job objects.")] = True,
+    status: _ActionStatusFilter = None,
+    sort: _ActionJobSort = None,
+    order: _ActionJobOrder = None,
+    limit: _ActionLimit = 20,
+    page: _ActionPage = 1,
+    brief: _ActionJobsBrief = True,
 ):
     """List jobs across every workflow run in a repository.
 
@@ -4087,17 +4097,29 @@ def unblock_user_from_org(org: str, username: str):
     that blocking removed are not restored."""
     return _ok(_get_client().delete(f"/orgs/{org}/blocks/{username}"))
 
+# Gitea keeps two routes onto one handler: the current /orgs/{org}/repos and
+# the deprecated singular /org/{org}/repos. The options are the same object on
+# both, so they are named once here.
+_OrgRepoName = Annotated[str, Field(description="Repository slug (URL-safe short name).")]
+_OrgRepoPrivate = Annotated[bool | None, Field(description="True = private repo. Public repos are blocked unless the server was started with --allow-public.")]
+_OrgRepoAutoInit = Annotated[bool | None, Field(description="True = create an initial commit (README/license/gitignore based on the fields below).")]
+_OrgRepoGitignores = Annotated[str | None, Field(description="Comma-separated .gitignore template names (e.g. 'Python,Node').")]
+_OrgRepoLicense = Annotated[str | None, Field(description="License template name (e.g. 'MIT', 'Apache-2.0').")]
+_OrgRepoReadme = Annotated[str | None, Field(description="README template name (e.g. 'Default').")]
+_OrgRepoDefaultBranch = Annotated[str | None, Field(description="Default branch name for the new repo (e.g. 'main').")]
+
 @_op(gitea_write)
 def create_org_repo(
+    # dup-ok: the deprecated twin is the same handler under Gitea's old singular path
     org: str,
-    name: Annotated[str, Field(description="Repository slug (URL-safe short name).")],
+    name: _OrgRepoName,
     description: str | None = None,
-    private: Annotated[bool | None, Field(description="True = private repo. Public repos are blocked unless the server was started with --allow-public.")] = None,
-    auto_init: Annotated[bool | None, Field(description="True = create an initial commit (README/license/gitignore based on the fields below).")] = None,
-    gitignores: Annotated[str | None, Field(description="Comma-separated .gitignore template names (e.g. 'Python,Node').")] = None,
-    license: Annotated[str | None, Field(description="License template name (e.g. 'MIT', 'Apache-2.0').")] = None,
-    readme: Annotated[str | None, Field(description="README template name (e.g. 'Default').")] = None,
-    default_branch: Annotated[str | None, Field(description="Default branch name for the new repo (e.g. 'main').")] = None,
+    private: _OrgRepoPrivate = None,
+    auto_init: _OrgRepoAutoInit = None,
+    gitignores: _OrgRepoGitignores = None,
+    license: _OrgRepoLicense = None,
+    readme: _OrgRepoReadme = None,
+    default_branch: _OrgRepoDefaultBranch = None,
 ):
     """Create a repository in an organization."""
     private = _enforce_private(private)
@@ -4105,20 +4127,21 @@ def create_org_repo(
 
 @_op(gitea_write)
 def create_org_repo_deprecated(
+    # dup-ok: same handler as create_org_repo; the legacy route stays reachable
     org: str,
-    name: Annotated[str, Field(description="Repository slug (URL-safe short name).")],
+    name: _OrgRepoName,
     description: str | None = None,
-    private: Annotated[bool | None, Field(description="True = private repo. Public repos are blocked unless the server was started with --allow-public.")] = None,
-    auto_init: Annotated[bool | None, Field(description="True = create an initial commit (README/license/gitignore based on the fields below).")] = None,
-    gitignores: Annotated[str | None, Field(description="Comma-separated .gitignore template names (e.g. 'Python,Node').")] = None,
-    license: Annotated[str | None, Field(description="License template name (e.g. 'MIT', 'Apache-2.0').")] = None,
-    readme: Annotated[str | None, Field(description="README template name (e.g. 'Default').")] = None,
-    default_branch: Annotated[str | None, Field(description="Default branch name for the new repo (e.g. 'main').")] = None,
+    private: _OrgRepoPrivate = None,
+    auto_init: _OrgRepoAutoInit = None,
+    gitignores: _OrgRepoGitignores = None,
+    license: _OrgRepoLicense = None,
+    readme: _OrgRepoReadme = None,
+    default_branch: _OrgRepoDefaultBranch = None,
 ):
     """Create a repository in an organization via Gitea's deprecated singular-'org' path.
 
     Same handler and same options as create_org_repo, which uses the current
-    /orgs/{org}/repos route — prefer that one. This op exists only to keep
+    /orgs/{org}/repos route - prefer that one. This op exists only to keep
     the legacy /org/{org}/repos path reachable."""
     private = _enforce_private(private)
     return _call("POST", "/org/{org}/repos", locals())
@@ -4869,14 +4892,14 @@ def admin_update_runner(
 
 @_op(gitea_admin_read)
 def admin_list_workflow_runs(
-    event: Annotated[str | None, Field(description="Filter by the event that triggered the run, as named in the workflow's `on:` block (e.g. 'push', 'pull_request', 'workflow_dispatch', 'schedule').")] = None,
-    branch: Annotated[str | None, Field(description="Filter by the run's head branch name (no 'refs/heads/' prefix), e.g. 'main'.")] = None,
+    event: _ActionRunEvent = None,
+    branch: _ActionRunBranch = None,
     status: _WorkflowStatusFilter = None,
-    actor: Annotated[str | None, Field(description="Filter by the USERNAME that triggered the run (not a display name or user ID).")] = None,
-    head_sha: Annotated[str | None, Field(description="Filter by the full 40-character commit SHA the run was triggered on.")] = None,
-    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = 20,
-    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
-    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-run objects.")] = True,
+    actor: _ActionRunActor = None,
+    head_sha: _ActionRunHeadSha = None,
+    limit: _ActionLimit = 20,
+    page: _ActionPage = 1,
+    brief: _ActionRunsBrief = True,
 ):
     """List workflow runs across every repository on the instance (admin only).
 
@@ -4892,11 +4915,11 @@ def admin_list_workflow_runs(
 @_op(gitea_admin_read)
 def admin_list_workflow_jobs(
     status: _WorkflowStatusFilter = None,
-    sort: Annotated[Literal["id"] | None, Field(description="Sort field. 'id' is the only value Gitea supports here, and is also the default.")] = None,
-    order: Annotated[Literal["asc", "desc"] | None, Field(description="Sort direction. Defaults to 'asc' — pass 'desc' for the most recent jobs first.")] = None,
-    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = 20,
-    page: Annotated[int | None, Field(description="1-based page number.")] = 1,
-    brief: Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-job objects.")] = True,
+    sort: _ActionJobSort = None,
+    order: _ActionJobOrder = None,
+    limit: _ActionLimit = 20,
+    page: _ActionPage = 1,
+    brief: _ActionJobsBrief = True,
 ):
     """List workflow jobs across every repository on the instance (admin only).
 
@@ -5008,26 +5031,7 @@ def create_org_runner_token(org: str):
 # the org-level secrets/variables: same `/orgs/{org}/actions/*` prefix, same
 # org-admin permission boundary.
 
-# `status` is one of Gitea's GitHub-compatible aliases; several collapse onto
-# the same internal state (pending/waiting/requested/action_required, and
-# skipped/neutral, and cancelled/timed_out), and `completed` matches every
-# finished state. Anything else is rejected with 400.
-_ActionStatusFilter = Annotated[
-    Literal[
-        "pending", "waiting", "requested", "action_required", "queued",
-        "in_progress", "completed", "failure", "success", "skipped",
-        "neutral", "cancelled", "timed_out",
-    ] | None,
-    Field(description="Filter by run/job status. 'completed' matches success, failure, skipped and cancelled together. Omit for all statuses."),
-]
-_ActionRunEvent = Annotated[str | None, Field(description="Triggering webhook event name, e.g. 'push', 'pull_request', 'workflow_dispatch', 'schedule'.")]
-_ActionRunBranch = Annotated[str | None, Field(description="Branch name the run was triggered on (bare name, e.g. 'main' — NOT 'refs/heads/main').")]
-_ActionRunActor = Annotated[str | None, Field(description="USERNAME that triggered the run (NOT a user ID / display name). Unknown usernames yield an empty result.")]
-_ActionRunHeadSha = Annotated[str | None, Field(description="Full commit SHA the run was triggered on.")]
-_ActionPage = Annotated[int | None, Field(description="1-based page number.")]
-_ActionLimit = Annotated[int | None, Field(description="Page size. Server default if omitted.")]
-_ActionRunsBrief = Annotated[bool, Field(description="True (default) = compact slim view; False = full Gitea workflow-run objects.")]
-_ActionRunnerDisabled = Annotated[bool, Field(description="True = take the runner out of service (it stops picking up jobs); False = re-enable it. Required — this is the only editable runner field.")]
+
 
 @_op(gitea_read)
 def list_org_workflow_jobs(
@@ -5047,6 +5051,8 @@ def list_org_workflow_jobs(
 @_op(gitea_read)
 def list_org_workflow_runs(
     org: str,
+    # dup-ok: the user-scoped twin filters runs identically; one MCP tool per
+    # endpoint means the shared vocabulary is spelled out once per signature
     event: _ActionRunEvent = None,
     branch: _ActionRunBranch = None,
     status: _ActionStatusFilter = None,
@@ -5172,6 +5178,8 @@ def list_user_workflow_jobs(
 
 @_op(gitea_read)
 def list_user_workflow_runs(
+    # dup-ok: the org-scoped twin filters runs identically, minus `org`; a tool
+    # schema is built from this signature, so the vocabulary is restated here
     event: _ActionRunEvent = None,
     branch: _ActionRunBranch = None,
     status: _ActionStatusFilter = None,

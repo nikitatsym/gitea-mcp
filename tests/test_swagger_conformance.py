@@ -64,10 +64,31 @@ pytestmark = pytest.mark.integration
 # in an already-waived op still surfaces. ONLY code shapes belong here - never a
 # name mismatch, which is the whole point of this test.
 UNANALYZABLE_OK: dict[str, tuple[str, ...]] = {
-    # The body comes from the _hook_body() helper. Both ops' method and path are
-    # still checked; the four field names are hand-checked against CreateHookOption.
+    # The commit author helper takes the assembled body and may add keys to it,
+    # so the extractor stops reading at the handoff. Both ops' method and path
+    # are still checked; the author/email fields are hand-checked against
+    # CreateFileOptions and ChangeFilesOptions.
+    "change_files": ("'body' is handed to another call, which could add keys",),
+    # The body comes from the _hook_body() helper. All three ops' method and path
+    # are still checked; the four field names are hand-checked against
+    # CreateHookOption.
+    "create_file": ("'body' is handed to another call, which could add keys",),
     "create_org_webhook": ("payload is a Call, not a readable dict",),
     "create_repo_webhook": ("payload is a Call, not a readable dict",),
+    "create_user_webhook": ("payload is a Call, not a readable dict",),
+    # The token ops resolve their (user, password) pair through
+    # _basic_auth_identity(), which reads `/user` when the caller omits the
+    # username. That GET is checked in its own right by the user-info op; each
+    # op's own _basic_auth_request() call is read and checked as usual.
+    "create_user_access_token": (
+        "calls _basic_auth_identity(), which makes HTTP calls this extractor cannot read",
+    ),
+    "delete_user_access_token": (
+        "calls _basic_auth_identity(), which makes HTTP calls this extractor cannot read",
+    ),
+    "list_user_access_tokens": (
+        "calls _basic_auth_identity(), which makes HTTP calls this extractor cannot read",
+    ),
     # The blocking waiters poll through asyncio.to_thread(_fetch_*), so their
     # requests are made by a helper this extractor cannot read. Those helpers hit
     # the same endpoints get_workflow_run / get_workflow_job /
@@ -137,6 +158,21 @@ SPEC_GAPS: dict[str, _SpecGap] = {
         "GET",
         "/nodeinfo",
         "gone from the spec and a 501 stub since Gitea 1.26; kept for older live instances",
+    ),
+}
+
+# Endpoints whose handler reads a body the spec never declares: Gitea's
+# `swagger:operation` comment for them carries no `parameters:` block, so the
+# generated spec says the endpoint accepts nothing while the handler binds a
+# struct. Each entry pins the exact field set, hand-checked against that struct,
+# so a typo still fails and a field the op grows later surfaces.
+UNDECLARED_BODY_OK: dict[tuple[str, str], tuple[frozenset[str], str]] = {
+    ("POST", "/user/gpg_key_verify"): (
+        frozenset({"armored_signature", "key_id"}),
+        (
+            "handler binds api.VerifyGPGKeyOption (routers/api/v1/user/gpg_key.go), "
+            "whose swagger comment declares no parameters"
+        ),
     ),
 }
 
@@ -929,6 +965,12 @@ def test_allowlists_have_no_stale_entries() -> None:
         "SPEC_GAPS entries name a call their op no longer makes, so the gap "
         f"covers nothing and the real call goes unchecked: {orphaned}"
     )
+    reached = {(call.method, call.path) for calls in ops.calls.values() for call in calls}
+    unused = sorted(f"{method} {path}" for method, path in UNDECLARED_BODY_OK if (method, path) not in reached)
+    assert not unused, (
+        "UNDECLARED_BODY_OK entries name an endpoint no op calls any more, so "
+        f"the waiver covers nothing: {unused}"
+    )
 
 
 def test_no_wire_call_ops_are_expected() -> None:
@@ -1141,12 +1183,27 @@ def test_wire_calls_match_swagger(swagger: _Swagger) -> None:
                     f"{where}: query params {bad_query} are not in the spec; "
                     f"it accepts {sorted(endpoint.query)}"
                 )
-            bad_body = sorted(call.body - endpoint.body)
-            if bad_body:
+            waived = UNDECLARED_BODY_OK.get((call.method, matches[0]))
+            if waived is not None and endpoint.body:
                 findings.append(
-                    f"{where}: body fields {bad_body} are not in the spec; "
-                    f"it accepts {sorted(endpoint.body)}"
+                    f"{where}: the spec now declares a body - drop it from "
+                    "UNDECLARED_BODY_OK and check the fields against it"
                 )
+            elif waived is not None:
+                extra = sorted(call.body - waived[0])
+                missing = sorted(waived[0] - call.body)
+                if extra or missing:
+                    findings.append(
+                        f"{where}: waived as undeclared for {sorted(waived[0])}, but "
+                        f"the call sends {sorted(call.body)}"
+                    )
+            else:
+                bad_body = sorted(call.body - endpoint.body)
+                if bad_body:
+                    findings.append(
+                        f"{where}: body fields {bad_body} are not in the spec; "
+                        f"it accepts {sorted(endpoint.body)}"
+                    )
         if gap is not None and sorted(unserved) != [gap.call]:
             findings.append(
                 f"{op}: recorded as absent from the spec for [{gap.call}], but its "
