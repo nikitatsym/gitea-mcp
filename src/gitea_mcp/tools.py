@@ -715,6 +715,11 @@ def list_repo_webhooks(owner: str, repo: str):
     """List a repository's webhooks."""
     return _ok(_get_client().paginate(f"/repos/{owner}/{repo}/hooks"))
 
+@_op(gitea_read)
+def get_repo_webhook(owner: str, repo: str, hook_id: int):
+    """Get one repository webhook by ID."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/hooks/{hook_id}"))
+
 @_op(gitea_write)
 def create_repo_webhook(
     owner: str,
@@ -751,6 +756,78 @@ def test_repo_webhook(owner: str, repo: str, hook_id: int):
     """Test a repository webhook."""
     return _ok(_get_client().post(f"/repos/{owner}/{repo}/hooks/{hook_id}/tests"))
 
+# Server-side Git hooks, as opposed to the HTTP webhooks above: scripts the
+# repository runs on push. Gitea addresses them by name, not by numeric ID,
+# and supports exactly the three names below.
+_GitHookName = Annotated[Literal["pre-receive", "update", "post-receive"], Field(description="Name of the server-side Git hook — Gitea supports only 'pre-receive', 'update' and 'post-receive'. This is the hook's identity; it is NOT a numeric ID, and any other value is a 404.")]
+
+
+@_op(gitea_read)
+def list_repo_git_hooks(owner: str, repo: str):
+    """List a repository's server-side Git hooks and whether each one is active."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/hooks/git"))
+
+@_op(gitea_read)
+def get_repo_git_hook(owner: str, repo: str, hook_name: _GitHookName):
+    """Get one server-side Git hook of a repository, including its script content."""
+    return _ok(_get_client().get(f"/repos/{owner}/{repo}/hooks/git/{hook_name}"))
+
+@_op(gitea_write)
+def edit_repo_git_hook(
+    owner: str,
+    repo: str,
+    hook_name: _GitHookName,
+    content: Annotated[str, Field(description="Full replacement script for the hook, e.g. '#!/bin/sh\\nexit 0'. Written verbatim and run by the server on push; an empty string deactivates the hook.")],
+):
+    """Set the script content of a repository's server-side Git hook."""
+    return _call("PATCH", "/repos/{owner}/{repo}/hooks/git/{hook_name}", locals())
+
+@_op(gitea_delete)
+def delete_repo_git_hook(owner: str, repo: str, hook_name: _GitHookName):
+    """Delete a repository's server-side Git hook — clears its script and deactivates it."""
+    return _ok(_get_client().delete(f"/repos/{owner}/{repo}/hooks/git/{hook_name}"))
+
+# Webhooks owned by the authenticated user's own account, rather than by a
+# repository or an organization. Same Hook payloads as the two pairs above.
+
+
+@_op(gitea_read)
+def list_user_webhooks():
+    """List the authenticated user's webhooks."""
+    return _ok(_get_client().paginate("/user/hooks"))
+
+@_op(gitea_read)
+def get_user_webhook(hook_id: int):
+    """Get one of the authenticated user's webhooks by ID."""
+    return _ok(_get_client().get(f"/user/hooks/{hook_id}"))
+
+@_op(gitea_write)
+def create_user_webhook(
+    config: _HookConfig,
+    events: _HookEvents,
+    hook_type: _HookType = "gitea",
+    active: bool = True,
+):
+    """Create a webhook on the authenticated user's account."""
+    return _ok(_get_client().post(
+        "/user/hooks", json=_hook_body(hook_type, config, events, active),
+    ))
+
+@_op(gitea_write)
+def edit_user_webhook(
+    hook_id: int,
+    config: _HookConfigPatch = None,
+    events: _HookEventsPatch = None,
+    active: bool | None = None,
+):
+    """Edit one of the authenticated user's webhooks."""
+    return _call("PATCH", "/user/hooks/{hook_id}", locals())
+
+@_op(gitea_delete)
+def delete_user_webhook(hook_id: int):
+    """Delete one of the authenticated user's webhooks."""
+    return _ok(_get_client().delete(f"/user/hooks/{hook_id}"))
+
 # ── Org Webhooks ─────────────────────────────────────────────────────────
 
 
@@ -758,6 +835,11 @@ def test_repo_webhook(owner: str, repo: str, hook_id: int):
 def list_org_webhooks(org: str):
     """List webhooks for an organization."""
     return _ok(_get_client().paginate(f"/orgs/{org}/hooks"))
+
+@_op(gitea_read)
+def get_org_webhook(org: str, hook_id: int):
+    """Get one organization webhook by ID."""
+    return _ok(_get_client().get(f"/orgs/{org}/hooks/{hook_id}"))
 
 @_op(gitea_write)
 def create_org_webhook(
