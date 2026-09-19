@@ -3260,6 +3260,15 @@ def list_orgs():
     return _ok(_get_client().paginate("/user/orgs"))
 
 @_op(gitea_read)
+def list_all_orgs():
+    """List every organization visible on the instance.
+
+    Instance-wide, unlike list_orgs (only the orgs the caller belongs to).
+    Anonymous callers see public orgs, signed-in callers also see limited
+    ones, and site admins also see private ones."""
+    return _ok(_get_client().paginate("/orgs"))
+
+@_op(gitea_read)
 def get_org(org: str):
     """Get an organization by name."""
     return _ok(_get_client().get(f"/orgs/{org}"))
@@ -3293,6 +3302,35 @@ def delete_org(org: str):
     """Delete an organization."""
     return _ok(_get_client().delete(f"/orgs/{org}"))
 
+@_op(gitea_execute)
+def rename_org(
+    org: str,
+    new_name: Annotated[str, Field(description="New org login (the URL slug). Must be unused — no other user or organization may already hold it.")],
+):
+    """Rename an organization — its URLs change.
+
+    The login is the org's URL segment, so every web link, API path and git
+    remote under the old name moves to the new one. Clones pointing at the
+    old name must be re-pointed by hand, and the freed old name can be
+    claimed by someone else afterwards. Returns no body on success."""
+    return _call("POST", "/orgs/{org}/rename", locals())
+
+@_op(gitea_write)
+def update_org_avatar(
+    org: str,
+    image: Annotated[str, Field(description="Base64-encoded image file content (PNG/JPEG/GIF) — the bytes of the file, base64-encoded into a string. NOT a URL and NOT a file path; Gitea decodes it server-side.")],
+):
+    """Set an organization's avatar from a base64-encoded image.
+
+    The image travels as a base64 string inside the JSON body, not as a
+    multipart file upload. Returns no body on success."""
+    return _call("POST", "/orgs/{org}/avatar", locals())
+
+@_op(gitea_delete)
+def delete_org_avatar(org: str):
+    """Clear an organization's custom avatar, reverting it to the generated default."""
+    return _ok(_get_client().delete(f"/orgs/{org}/avatar"))
+
 @_op(gitea_read)
 def list_org_repos(
     org: str,
@@ -3305,6 +3343,16 @@ def list_org_repos(
     if brief:
         data = _slim_repos(data)
     return _ok(data)
+
+@_op(gitea_delete)
+def delete_org_repos(org: str):
+    """Delete EVERY repository owned by an organization. Irreversible.
+
+    One call wipes the org's whole repo list — no per-repo confirmation and
+    no undo. Gitea answers 202 and finishes the deletion in a background
+    task, so list_org_repos can still report repos for a while afterwards.
+    To remove a single repository use delete_repo instead."""
+    return _ok(_get_client().delete(f"/orgs/{org}/repos"))
 
 @_op(gitea_read)
 def list_org_members(org: str):
@@ -3341,6 +3389,44 @@ def remove_org_public_member(org: str, username: str):
     """Conceal a user's membership in an organization."""
     return _ok(_get_client().delete(f"/orgs/{org}/public_members/{username}"))
 
+@_op(gitea_read)
+def list_org_blocked_users(org: str):
+    """List the users an organization has blocked."""
+    return _ok(_get_client().paginate(f"/orgs/{org}/blocks"))
+
+@_op(gitea_read)
+def check_user_blocked_by_org(org: str, username: str):
+    """Check whether an organization blocks a user.
+
+    A membership-style check that answers with no body: blocked is 204
+    (returned here as {"status": "ok"}), not blocked is 404, which surfaces
+    as a GiteaError. A 404 from this op is the negative answer, not a
+    missing org or user."""
+    return _ok(_get_client().get(f"/orgs/{org}/blocks/{username}"))
+
+@_op(gitea_write)
+def block_user_from_org(
+    org: str,
+    username: str,
+    note: Annotated[str | None, Field(description="Free-text reason recorded alongside the block. Sent as a query param, not a body field.")] = None,
+):
+    """Block a user on behalf of an organization.
+
+    Blocking also unfollows, unstars, unwatches, unassigns and removes the
+    user as a collaborator across the org's repos, and cancels pending repo
+    transfers between them. Gitea refuses with 422 when the target is a
+    member of the org or is itself an organization."""
+    params = _body(locals(), exclude=("org", "username"))
+    return _ok(_get_client().put(f"/orgs/{org}/blocks/{username}", params=params or None))
+
+@_op(gitea_delete)
+def unblock_user_from_org(org: str, username: str):
+    """Unblock a user previously blocked by an organization.
+
+    Only lifts the block; the follows, stars, watches and collaborations
+    that blocking removed are not restored."""
+    return _ok(_get_client().delete(f"/orgs/{org}/blocks/{username}"))
+
 @_op(gitea_write)
 def create_org_repo(
     org: str,
@@ -3356,6 +3442,35 @@ def create_org_repo(
     """Create a repository in an organization."""
     private = _enforce_private(private)
     return _call("POST", "/orgs/{org}/repos", locals())
+
+@_op(gitea_write)
+def create_org_repo_deprecated(
+    org: str,
+    name: Annotated[str, Field(description="Repository slug (URL-safe short name).")],
+    description: str | None = None,
+    private: Annotated[bool | None, Field(description="True = private repo. Public repos are blocked unless the server was started with --allow-public.")] = None,
+    auto_init: Annotated[bool | None, Field(description="True = create an initial commit (README/license/gitignore based on the fields below).")] = None,
+    gitignores: Annotated[str | None, Field(description="Comma-separated .gitignore template names (e.g. 'Python,Node').")] = None,
+    license: Annotated[str | None, Field(description="License template name (e.g. 'MIT', 'Apache-2.0').")] = None,
+    readme: Annotated[str | None, Field(description="README template name (e.g. 'Default').")] = None,
+    default_branch: Annotated[str | None, Field(description="Default branch name for the new repo (e.g. 'main').")] = None,
+):
+    """Create a repository in an organization via Gitea's deprecated singular-'org' path.
+
+    Same handler and same options as create_org_repo, which uses the current
+    /orgs/{org}/repos route — prefer that one. This op exists only to keep
+    the legacy /org/{org}/repos path reachable."""
+    private = _enforce_private(private)
+    return _call("POST", "/org/{org}/repos", locals())
+
+@_op(gitea_read)
+def list_org_activities(
+    org: str,
+    date: Annotated[str | None, Field(description="Restrict the feed to a single day, as 'YYYY-MM-DD'. Omit for the recent feed across all days.")] = None,
+):
+    """List an organization's activity feed — pushes, repo creations, issue and PR events."""
+    params = _body(locals(), exclude=("org",))
+    return _ok(_get_client().paginate(f"/orgs/{org}/activities/feeds", params=params or None))
 
 @_op(gitea_read)
 def list_user_orgs(username: str):
@@ -3454,6 +3569,14 @@ def check_team_repo(team_id: int, org: str, repo: str):
 def list_org_labels(org: str):
     """List labels for an organization."""
     return _ok(_get_client().paginate(f"/orgs/{org}/labels"))
+
+@_op(gitea_read)
+def get_org_label(
+    org: str,
+    label_id: Annotated[int, Field(description="Label ID (int64) from list_org_labels — NOT the label name.")],
+):
+    """Get a single organization label by ID."""
+    return _ok(_get_client().get(f"/orgs/{org}/labels/{label_id}"))
 
 @_op(gitea_write)
 def create_org_label(
