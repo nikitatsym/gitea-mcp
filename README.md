@@ -12,7 +12,7 @@ MCP server for Gitea, built for autonomous AI agents.
 - Organizations, teams, and user management
 - Webhooks, deploy keys, notifications, wiki, packages
 - Admin endpoints for instance-level operations
-- **6 risk-graded meta-tools** (`gitea_read` / `gitea_write` / `gitea_execute` / `gitea_delete` / `gitea_admin_read` / `gitea_admin_write`) — agents pick a tool surface by the kind of side effect, not the HTTP verb
+- **Risk-graded meta-tools** (`gitea_read` / `gitea_write` / `gitea_execute` / `gitea_delete` / `gitea_admin_read` / `gitea_admin_write`) — agents pick a tool surface by the kind of side effect, not the HTTP verb
 - Per-param help with `operation='help' params={'search': 'foo'}` for substring filtering and cross-group hints
 - Zero-config install via `uvx`
 
@@ -60,7 +60,7 @@ By default, creating public repos and orgs is blocked — agents must pass `priv
 
 ## Tool Groups
 
-Operations are exposed through 6 risk-graded meta-tools — one tool surface per scope, dispatched via `operation` + `params`.
+Operations are exposed through risk-graded meta-tools — one tool surface per scope, dispatched via `operation` + `params`.
 
 | Meta-tool | Scope | Examples |
 |---|---|---|
