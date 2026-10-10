@@ -68,7 +68,6 @@ def _call(
     *,
     rename: dict | None = None,
     exclude=(),
-    keep_null=(),
 ):
     """Make a Gitea API call, deriving path-params and body/query from `kw`.
 
@@ -78,8 +77,8 @@ def _call(
     (POST/PUT/PATCH) or query params for GET/DELETE.
 
     `rename` maps Python names to API field names; `exclude` removes helper
-    arguments such as `brief`. See `prepare.build_payload` for omission and
-    `keep_null` semantics.
+    arguments such as `brief`. See `prepare.build_payload` for omission
+    semantics.
 
     Use this for the simple one-call pattern; for paginated, slimmed,
     text, or transformation-heavy endpoints, call the client directly.
@@ -87,7 +86,7 @@ def _call(
     placeholders = _PATH_PLACEHOLDER.findall(path)
     excl = set(placeholders) | set(exclude)
     formatted = path.format(**{k: kw[k] for k in placeholders})
-    payload = build_payload(kw, exclude=excl, rename=rename, keep_null=keep_null)
+    payload = build_payload(kw, exclude=excl, rename=rename)
     client = get_client()
     method = method.upper()
     if method == "GET":

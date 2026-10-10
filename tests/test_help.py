@@ -12,7 +12,6 @@ import pytest
 from pydantic import Field
 
 from gitea_mcp import server
-from gitea_mcp.registry import UNSET
 from gitea_mcp.server import _build_help, _build_params_model
 
 
@@ -134,32 +133,13 @@ class TestHelpSearch:
         assert "Also matching in other groups" not in out  # nothing in execute
 
 
-class TestHelpUnsetRendering:
-    """`Field(default_factory=lambda: UNSET)` stores Pydantic's
-    PydanticUndefined as the field default. The help renderer must NOT
-    leak that into the output as `=PydanticUndefined`."""
-
-    def test_unset_default_renders_as_optional_no_default(self):
-        def fn_with_unset(owner: str, milestone: int = UNSET):
-            """Op with a sentinel-defaulted optional param."""
-
-        _seed({"gitea_write": {"FnWithUnset": fn_with_unset}})
-        out = _build_help("gitea_write")
-        # The signature shows the param as optional with no `=` suffix.
-        assert "milestone?: int" in out
-        # And critically: no leaked PydanticUndefined.
-        assert "PydanticUndefined" not in out
-        # Owner stays required (no `?`).
-        assert "owner: str" in out
-
-    def test_explicit_none_default_still_renders(self):
-        """`= None` is a real default the API treats differently from omission
-        in some places — keep rendering it as `param?: T` (no `=None` either,
-        per existing convention)."""
+class TestHelpOptionalRendering:
+    def test_none_default_renders_as_optional(self):
+        """A `= None` default renders as `param?: T`, with no `=None` suffix."""
         def fn_with_none(owner: str, milestone: int = None):  # noqa: RUF013 - the sloppy shape is the test subject
             """Op with None default."""
 
         _seed({"gitea_write": {"FnWithNone": fn_with_none}})
         out = _build_help("gitea_write")
+        assert "owner: str" in out
         assert "milestone?: int" in out
-        assert "PydanticUndefined" not in out

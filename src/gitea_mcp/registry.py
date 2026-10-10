@@ -14,29 +14,6 @@ class Group:
 ROOT = Group("root", "")
 
 
-class Unset:
-    """Singleton representing an omitted argument, distinct from an explicit None.
-
-    See prepare.build_payload for payload omission and nullable-field handling.
-    """
-
-    _instance: "Unset | None" = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return "UNSET"
-
-    def __bool__(self) -> bool:
-        return False
-
-
-UNSET = Unset()
-
-
 def op(group: Group):
     """Mark a function as an MCP tool in the given group.
 

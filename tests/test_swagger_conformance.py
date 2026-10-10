@@ -511,7 +511,7 @@ class _OpExtractor:
                 excluded |= self._str_tuple(kw.value)
             elif kw.arg == "rename":
                 renames = self._str_dict(kw.value)
-            elif kw.arg != "keep_null":  # keep_null changes values, not names
+            else:
                 self._block(f"unsupported keyword {kw.arg!r}")
         return {renames.get(p, p) for p in self.params if p not in excluded}
 
@@ -1093,10 +1093,7 @@ def test_required_body_params_are_required(swagger: _Swagger) -> None:
             wire = wire_of.get(arg, arg)
             if wire not in required_on_wire or arg in required_args:
                 continue
-            default_is_omitted = param.default is None or isinstance(
-                param.default, server.Unset
-            )
-            if default_is_omitted:
+            if param.default is None:
                 findings.append(
                     f"{op}.{arg} -> {call.method} {call.path} body field {wire!r}: "
                     "required by Gitea but omitted when the MCP param is absent"

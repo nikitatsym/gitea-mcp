@@ -1,6 +1,6 @@
 """Shared response formatting and validation helpers.
 
-See build_payload for request payload omission and nullable-field handling.
+See build_payload for request payload omission.
 """
 
 import os
@@ -8,7 +8,6 @@ import re
 from typing import Literal
 
 from .config import allow_public
-from .registry import UNSET
 
 # Callers annotate the parameter with the same literal set, so returning a bare
 # `str` here would widen it back out at every assignment site.
@@ -76,13 +75,11 @@ def build_payload(
     local_vars: dict,
     exclude=(),
     rename: dict | None = None,
-    keep_null=(),
 ) -> dict:
     """Build a JSON body or query-params dict from function locals.
 
-    Drops keys whose value is `None` or `UNSET`, plus any key listed in
-    `exclude`. None is dropped by default because optional parameters used
-    None for omission before UNSET distinguished omission from explicit null.
+    Drops keys whose value is `None`, plus any key listed in `exclude`: an
+    optional parameter left at its `None` default stays off the wire.
     The optional `rename` map translates Python parameter names to API field
     names (e.g. `{"status_types": "status-types"}`). Use as:
 
@@ -90,25 +87,15 @@ def build_payload(
         params = build_payload(locals(), exclude=("brief",),
                                rename={"status_types": "status-types"})
 
-    `keep_null=("assignee",)` opts a specific field in to nullable-clear
-    semantics: a caller-supplied `None` is forwarded as JSON `null` instead
-    of being dropped. Those params must default to `UNSET` (not `None`) so
-    the omitted case can still be told apart from the clear case.
-
     Adding a new optional parameter forwards it automatically through
     build_payload(locals()), subject to the exclusion and omission rules;
     there is no `if x is not None` to forget.
     """
     excl = set(exclude)
     rmap = rename or {}
-    keep = set(keep_null)
     out: dict = {}
     for k, v in local_vars.items():
-        if k in excl:
-            continue
-        if v is UNSET:
-            continue
-        if v is None and k not in keep:
+        if k in excl or v is None:
             continue
         out[rmap.get(k, k)] = v
     return out

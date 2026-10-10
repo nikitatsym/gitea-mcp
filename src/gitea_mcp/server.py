@@ -19,16 +19,14 @@ from mcp.types import ContentBlock, TextContent
 from pydantic import (
     BaseModel,
     ConfigDict,
-    Field,
     ValidationError,
     create_model,
     field_validator,
 )
-from pydantic_core import PydanticUndefined
 
 from . import tools as _tools_module
 from .client import GiteaError
-from .registry import ROOT, UNSET, Unset
+from .registry import ROOT
 from .wait_registry import WAIT_REGISTRY as _WAIT_REGISTRY
 
 mcp = MCPServer("gitea")
@@ -119,9 +117,6 @@ def _build_params_model(fn) -> type[BaseModel]:
         ann = hints.get(name, Any)
         if param.default is inspect.Parameter.empty:
             fields[name] = (ann, ...)
-        elif isinstance(param.default, Unset):
-            # A factory preserves omission through model_dump(exclude_unset=True).
-            fields[name] = (ann, Field(default_factory=lambda: UNSET))
         else:
             fields[name] = (ann, param.default)
 
@@ -204,17 +199,10 @@ def _type_to_str(hint) -> str:
 
 
 def _format_param_for_help(name: str, field) -> str:
-    """Render required and optional parameter signatures for help.
-
-    Factory-defaulted fields use PydanticUndefined as their stored default.
-    Show them as `name?: type`, without exposing that sentinel or evaluating
-    the factory.
-    """
+    """Render required and optional parameter signatures for help."""
     type_str = _type_to_str(field.annotation)
     if field.is_required():
         return f"{name}: {type_str}"
-    if field.default_factory is not None or field.default is PydanticUndefined:
-        return f"{name}?: {type_str}"
     if field.default is None:
         return f"{name}?: {type_str}"
     return f"{name}?: {type_str}={field.default!r}"
