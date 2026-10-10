@@ -81,8 +81,10 @@ def build_payload(
     """Build a JSON body or query-params dict from function locals.
 
     Drops keys whose value is `None` or `UNSET`, plus any key listed in
-    `exclude`. The optional `rename` map translates Python parameter names
-    to API field names (e.g. `{"status_types": "status-types"}`). Use as:
+    `exclude`. None is dropped by default because optional parameters used
+    None for omission before UNSET distinguished omission from explicit null.
+    The optional `rename` map translates Python parameter names to API field
+    names (e.g. `{"status_types": "status-types"}`). Use as:
 
         body = build_payload(locals(), exclude=("owner", "repo"))
         params = build_payload(locals(), exclude=("brief",),
@@ -93,7 +95,9 @@ def build_payload(
     of being dropped. Those params must default to `UNSET` (not `None`) so
     the omitted case can still be told apart from the clear case.
 
-    Optional parameters in local_vars follow these rules unless excluded.
+    Adding a new optional parameter forwards it automatically through
+    build_payload(locals()), subject to the exclusion and omission rules;
+    there is no `if x is not None` to forget.
     """
     excl = set(exclude)
     rmap = rename or {}
