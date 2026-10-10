@@ -28,7 +28,7 @@ from pydantic_core import PydanticUndefined
 
 from . import tools as _tools_module
 from .client import GiteaError
-from .registry import _UNSET, ROOT, _Unset
+from .registry import ROOT, UNSET, Unset
 from .wait_registry import WAIT_REGISTRY as _WAIT_REGISTRY
 
 mcp = MCPServer("gitea")
@@ -119,12 +119,9 @@ def _build_params_model(fn) -> type[BaseModel]:
         ann = hints.get(name, Any)
         if param.default is inspect.Parameter.empty:
             fields[name] = (ann, ...)
-        elif isinstance(param.default, _Unset):
-            # Use default_factory so Pydantic stores `_UNSET` only at
-            # materialisation time. Combined with `model_dump(exclude_unset=True)`
-            # in `_coerce_call`, the caller's "omitted" state survives all the
-            # way to `_body`/`_call`, which then drops it from the payload.
-            fields[name] = (ann, Field(default_factory=lambda: _UNSET))
+        elif isinstance(param.default, Unset):
+            # A factory preserves omission through model_dump(exclude_unset=True).
+            fields[name] = (ann, Field(default_factory=lambda: UNSET))
         else:
             fields[name] = (ann, param.default)
 
@@ -207,18 +204,15 @@ def _type_to_str(hint) -> str:
 
 
 def _format_param_for_help(name: str, field) -> str:
-    """Render one parameter line: `name: type` (required) or `name?: type[=default]`.
+    """Render required and optional parameter signatures for help.
 
-    `Field(default_factory=lambda: _UNSET)` defaults Pydantic stores as
-    `PydanticUndefined`, not the factory result. We render those (and any
-    other factory-defaulted field) as `name?: type` with no `=...` suffix —
-    leaking `=PydanticUndefined` into help would be a discovery bug.
+    Factory-defaulted fields use PydanticUndefined as their stored default.
+    Show them as `name?: type`, without exposing that sentinel or evaluating
+    the factory.
     """
     type_str = _type_to_str(field.annotation)
     if field.is_required():
         return f"{name}: {type_str}"
-    # Factory-defaulted (including `_UNSET`) or sentinel-undefined → render
-    # with no default. The `?` marker already conveys "may be omitted".
     if field.default_factory is not None or field.default is PydanticUndefined:
         return f"{name}?: {type_str}"
     if field.default is None:
@@ -537,7 +531,7 @@ def _render_group_doc(group_name: str, doc: str, ops: dict[str, Any]) -> str:
 
 
 def _register_tools():
-    """Discover @_op-decorated functions, build Pydantic models, register MCP tools."""
+    """Discover @op-decorated functions, build Pydantic models, register MCP tools."""
     groups: dict[str, tuple] = {}
 
     for name, fn in inspect.getmembers(_tools_module, inspect.isfunction):

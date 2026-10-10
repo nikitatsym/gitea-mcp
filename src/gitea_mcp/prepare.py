@@ -1,18 +1,6 @@
-"""Shared helpers: slim functions, validation, response formatting.
+"""Shared response formatting and validation helpers.
 
-Payload assembly policy (see `_body`):
-
-  default          drops both `None` and `_UNSET` — back-compat with the
-                   pre-`_UNSET` shape, so the bulk of ops keep working
-                   unchanged after the sentinel is introduced.
-  `keep_null=`     per-op opt-in for nullable-clear semantics. List the
-                   field names whose caller-supplied `None` must reach the
-                   API as JSON `null` (e.g. clearing a milestone). Those
-                   params must be declared with default `_UNSET` (not
-                   `None`) so the omitted-vs-cleared distinction survives
-                   Pydantic validation.
-  always           `_UNSET` is dropped (it's a sentinel for "caller omitted",
-                   not a value).
+See build_payload for request payload omission and nullable-field handling.
 """
 
 import os
@@ -20,7 +8,7 @@ import re
 from typing import Literal
 
 from .config import allow_public
-from .registry import _UNSET
+from .registry import UNSET
 
 # Callers annotate the parameter with the same literal set, so returning a bare
 # `str` here would widen it back out at every assignment site.
@@ -39,7 +27,7 @@ def _extract_brief(body: str | None) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def _validate_brief(body: str | None) -> None:
+def validate_brief(body: str | None) -> None:
     """Raise ValueError if brief requirement is on and body lacks a valid <brief> tag."""
     if _BRIEF_MAX == 0:
         return
@@ -56,7 +44,7 @@ def _validate_brief(body: str | None) -> None:
         )
 
 
-def _enforce_private(private: bool | None) -> bool | None:
+def enforce_private(private: bool | None) -> bool | None:
     """Block non-private repos unless --allow-public was passed."""
     if not allow_public() and private is not True:
         raise ValueError(
@@ -65,7 +53,7 @@ def _enforce_private(private: bool | None) -> bool | None:
     return private
 
 
-def _enforce_visibility(visibility: Visibility) -> Visibility:
+def enforce_visibility(visibility: Visibility) -> Visibility:
     """Block non-private orgs unless --allow-public was passed."""
     if not allow_public() and visibility != "private":
         raise ValueError(
@@ -74,7 +62,8 @@ def _enforce_visibility(visibility: Visibility) -> Visibility:
     return visibility
 
 
-def _ok(data):
+def unwrap_response(data):
+    """Unwrap Gitea search results and represent empty responses as success."""
     if data is None:
         return {"status": "ok"}
     # Gitea search endpoints wrap results in {"ok": true, "data": [...]}
@@ -83,7 +72,7 @@ def _ok(data):
     return data
 
 
-def _body(
+def build_payload(
     local_vars: dict,
     exclude=(),
     rename: dict | None = None,
@@ -91,21 +80,20 @@ def _body(
 ) -> dict:
     """Build a JSON body or query-params dict from function locals.
 
-    Drops keys whose value is `None` or `_UNSET`, plus any key listed in
+    Drops keys whose value is `None` or `UNSET`, plus any key listed in
     `exclude`. The optional `rename` map translates Python parameter names
     to API field names (e.g. `{"status_types": "status-types"}`). Use as:
 
-        body = _body(locals(), exclude=("owner", "repo"))
-        params = _body(locals(), exclude=("brief",),
-                       rename={"status_types": "status-types"})
+        body = build_payload(locals(), exclude=("owner", "repo"))
+        params = build_payload(locals(), exclude=("brief",),
+                               rename={"status_types": "status-types"})
 
     `keep_null=("assignee",)` opts a specific field in to nullable-clear
     semantics: a caller-supplied `None` is forwarded as JSON `null` instead
-    of being dropped. Those params must default to `_UNSET` (not `None`) so
+    of being dropped. Those params must default to `UNSET` (not `None`) so
     the omitted case can still be told apart from the clear case.
 
-    Adding a new optional parameter to the function signature automatically
-    forwards it to the API — no `if x is not None: body["x"] = x` to forget.
+    Optional parameters in local_vars follow these rules unless excluded.
     """
     excl = set(exclude)
     rmap = rename or {}
@@ -114,7 +102,7 @@ def _body(
     for k, v in local_vars.items():
         if k in excl:
             continue
-        if v is _UNSET:
+        if v is UNSET:
             continue
         if v is None and k not in keep:
             continue
@@ -122,7 +110,7 @@ def _body(
     return out
 
 
-def _commit_author(body: dict, author_name: str | None, author_email: str | None) -> None:
+def attach_commit_author(body: dict, author_name: str | None, author_email: str | None) -> None:
     """Attach Gitea's `author` object to a contents-API commit body, in place.
 
     Gitea nests the git author override one level down, and omits the whole
@@ -156,7 +144,7 @@ def _slim_issue(issue: dict) -> dict:
     }
 
 
-def _slim_issues(data) -> list:
+def slim_issues(data) -> list:
     """Apply _slim_issue to a list of issues/PRs."""
     if isinstance(data, list):
         return [_slim_issue(i) for i in data]
@@ -178,7 +166,7 @@ def _slim_repo(repo: dict) -> dict:
     }
 
 
-def _slim_repos(data) -> list:
+def slim_repos(data) -> list:
     if isinstance(data, list):
         return [_slim_repo(r) for r in data]
     return data
@@ -197,7 +185,7 @@ def _slim_notification(n: dict) -> dict:
     }
 
 
-def _slim_notifications(data) -> list:
+def slim_notifications(data) -> list:
     if isinstance(data, list):
         return [_slim_notification(n) for n in data]
     return data
@@ -214,7 +202,7 @@ def _slim_comment(c: dict) -> dict:
     }
 
 
-def _slim_comments(data) -> list:
+def slim_comments(data) -> list:
     if isinstance(data, list):
         return [_slim_comment(c) for c in data]
     return data
@@ -231,13 +219,13 @@ def _slim_commit(c: dict) -> dict:
     }
 
 
-def _slim_commits(data) -> list:
+def slim_commits(data) -> list:
     if isinstance(data, list):
         return [_slim_commit(c) for c in data]
     return data
 
 
-def _slim_workflow_run(run: dict) -> dict:
+def slim_workflow_run(run: dict) -> dict:
     """Strip a workflow run to essential fields."""
     return {
         "id": run.get("id"),
@@ -254,15 +242,15 @@ def _slim_workflow_run(run: dict) -> dict:
     }
 
 
-def _slim_workflow_runs(data):
+def slim_workflow_runs(data):
     if isinstance(data, dict) and "workflow_runs" in data:
-        return [_slim_workflow_run(r) for r in data["workflow_runs"]]
+        return [slim_workflow_run(r) for r in data["workflow_runs"]]
     if isinstance(data, list):
-        return [_slim_workflow_run(r) for r in data]
+        return [slim_workflow_run(r) for r in data]
     return data
 
 
-def _slim_job(job: dict) -> dict:
+def slim_job(job: dict) -> dict:
     """Strip a workflow job to essential fields."""
     return {
         "id": job.get("id"),
@@ -279,9 +267,9 @@ def _slim_job(job: dict) -> dict:
     }
 
 
-def _slim_jobs(data):
+def slim_jobs(data):
     if isinstance(data, dict) and "jobs" in data:
-        return [_slim_job(j) for j in data["jobs"]]
+        return [slim_job(j) for j in data["jobs"]]
     if isinstance(data, list):
-        return [_slim_job(j) for j in data]
+        return [slim_job(j) for j in data]
     return data

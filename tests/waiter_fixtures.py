@@ -13,9 +13,9 @@ from contextlib import contextmanager
 
 import httpx
 
+import gitea_mcp.config as config_mod
 import gitea_mcp.tools as tools_mod
 from gitea_mcp.client import GiteaClient
-from gitea_mcp.config import _reset_settings
 
 RUN_PATH = "/api/v1/repos/me/proj/actions/runs/42"
 RUN_JOBS_PATH = "/api/v1/repos/me/proj/actions/runs/42/jobs"
@@ -85,13 +85,13 @@ def tools_state(monkeypatch):
     """Point the tools module at a throwaway instance for one test."""
     monkeypatch.setenv("GITEA_URL", "https://gitea.example.com")
     monkeypatch.setenv("GITEA_TOKEN", "test-token")
-    _reset_settings()
+    config_mod._settings = None
     tools_mod._client = None
     try:
         yield
     finally:
         tools_mod._client = None
-        _reset_settings()
+        config_mod._settings = None
 
 
 def seed_run_script(*statuses, jobs: list | None = None, extra: list | None = None):

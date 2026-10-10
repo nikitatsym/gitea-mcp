@@ -31,8 +31,3 @@ def set_allow_public(value: bool) -> None:
     global _allow_public
     _allow_public = value
 
-
-def _reset_settings() -> None:
-    """Force re-read from env. Used by tests."""
-    global _settings
-    _settings = None

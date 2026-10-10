@@ -14,21 +14,13 @@ class Group:
 ROOT = Group("root", "")
 
 
-class _Unset:
-    """Sentinel singleton: caller did not pass this field.
+class Unset:
+    """Singleton representing an omitted argument, distinct from an explicit None.
 
-    Distinct from `None`. `None` means "caller explicitly passed null" — the
-    Gitea API treats null as a clearing operation on some nullable fields
-    (e.g. clearing a milestone or assignee). Optional body params declared
-    with default `_UNSET` carry the omitted-vs-cleared distinction through
-    Pydantic validation (`exclude_unset=True`) and on to the wire (`_body`
-    drops `_UNSET` but, when the field is listed in `keep_null=`, keeps an
-    explicit `None`).
-
-    See `prepare.py:_body` for the dispatch rules.
+    See prepare.build_payload for payload omission and nullable-field handling.
     """
 
-    _instance: "_Unset | None" = None
+    _instance: "Unset | None" = None
 
     def __new__(cls):
         if cls._instance is None:
@@ -36,16 +28,16 @@ class _Unset:
         return cls._instance
 
     def __repr__(self) -> str:
-        return "_UNSET"
+        return "UNSET"
 
     def __bool__(self) -> bool:
         return False
 
 
-_UNSET = _Unset()
+UNSET = Unset()
 
 
-def _op(group: Group):
+def op(group: Group):
     """Mark a function as an MCP tool in the given group.
 
     A Pydantic params model is built from the signature at server registration

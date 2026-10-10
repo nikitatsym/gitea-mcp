@@ -205,8 +205,8 @@ _TRANSPORT_POSITIONALS = frozenset({"upload", "post_text"})
 
 # Call plumbing the extractor already models; everything else that reaches
 # these markers inside a helper is a wire call hiding from the check.
-_PLUMBING = frozenset({"_call", "_body", "_get_client", "locals"})
-_WIRE_MARKER = re.compile(r"_get_client\(|httpx\.|\b_call\(")
+_PLUMBING = frozenset({"_call", "build_payload", "get_client", "locals"})
+_WIRE_MARKER = re.compile(r"get_client\(|httpx\.|\b_call\(")
 
 _PACKAGE = tools.__name__.split(".")[0]
 
@@ -360,7 +360,7 @@ class _OpExtractor:
         for node in self._walk():
             targets: list[ast.expr] = []
             if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-                if not _is_call_to(node.value, "_get_client"):
+                if not _is_call_to(node.value, "get_client"):
                     continue
                 targets = list(node.targets) if isinstance(node, ast.Assign) else [node.target]
             for target in targets:
@@ -371,7 +371,7 @@ class _OpExtractor:
         return names
 
     def _is_client(self, node: ast.expr | None) -> bool:
-        return _is_call_to(node, "_get_client") or (
+        return _is_call_to(node, "get_client") or (
             isinstance(node, ast.Name) and node.id in self.clients
         )
 
@@ -412,7 +412,7 @@ class _OpExtractor:
     def _check_referenced(self, name: str) -> None:
         """Same check for a name handed off rather than called - plumbing included.
 
-        The plumbing grammar reads `_call(...)` and `_body(locals())` in place;
+        The plumbing grammar reads `_call(...)` and `build_payload(locals())` in place;
         `wire = _call` moves the request behind a local this extractor does not
         follow, so the modelling no longer holds.
         """
@@ -517,10 +517,10 @@ class _OpExtractor:
 
     def _body_call_names(self, node: ast.Call) -> set[str]:
         if not node.args or not _is_call_to(node.args[0], "locals"):
-            self._block("_body() is not called on locals()")
+            self._block("build_payload() is not called on locals()")
             return set()
         if self._new_binding_before(node):
-            self._block("a local is bound before _body(locals()) reads the frame")
+            self._block("a local is bound before build_payload(locals()) reads the frame")
         return self._forwarded(set(), node)
 
     def _payload_names(self, value: ast.expr | None) -> set[str]:
@@ -536,7 +536,7 @@ class _OpExtractor:
                 if not (isinstance(alt, ast.Constant) and alt.value is None):
                     names |= self._payload_names(alt)
             return names
-        if _is_call_to(value, "_body"):
+        if _is_call_to(value, "build_payload"):
             return self._body_call_names(value)
         self._block(f"payload is a {type(value).__name__}, not a readable dict")
         return set()
@@ -599,7 +599,7 @@ class _OpExtractor:
     def _initial_keys(self, value: ast.expr | None) -> set[str]:
         if isinstance(value, ast.Dict):
             return self._dict_keys(value)
-        if _is_call_to(value, "_body"):
+        if _is_call_to(value, "build_payload"):
             return self._body_call_names(value)
         self._block(f"dict built from a {type(value).__name__}, not a literal")
         return set()
@@ -1043,7 +1043,7 @@ def test_required_query_params_are_sent(swagger: _Swagger) -> None:
 def _arg_wire_names(fn: Callable[..., Any]) -> dict[str, str]:
     """Best-effort map from a signature arg to the wire name it is sent under.
 
-    Sources: `rename=` dicts of _call/_body, dict literals `{"key": arg}`, and
+    Sources: `rename=` dicts of _call/build_payload, dict literals `{"key": arg}`, and
     subscript assigns `params["key"] = arg`. Args sent under their own name need
     no entry; args whose value is transformed before sending stay unmapped and
     are simply not enum-checked.
@@ -1065,7 +1065,7 @@ def _arg_wire_names(fn: Callable[..., Any]) -> dict[str, str]:
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id in ("_call", "_body")
+            and node.func.id in ("_call", "build_payload")
         ):
             for kw in node.keywords:
                 if kw.arg == "rename" and isinstance(kw.value, ast.Dict):
@@ -1094,7 +1094,7 @@ def test_required_body_params_are_required(swagger: _Swagger) -> None:
             if wire not in required_on_wire or arg in required_args:
                 continue
             default_is_omitted = param.default is None or isinstance(
-                param.default, server._Unset
+                param.default, server.Unset
             )
             if default_is_omitted:
                 findings.append(

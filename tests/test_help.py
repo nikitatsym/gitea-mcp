@@ -12,7 +12,7 @@ import pytest
 from pydantic import Field
 
 from gitea_mcp import server
-from gitea_mcp.registry import _UNSET
+from gitea_mcp.registry import UNSET
 from gitea_mcp.server import _build_help, _build_params_model
 
 
@@ -135,12 +135,12 @@ class TestHelpSearch:
 
 
 class TestHelpUnsetRendering:
-    """`Field(default_factory=lambda: _UNSET)` stores Pydantic's
+    """`Field(default_factory=lambda: UNSET)` stores Pydantic's
     PydanticUndefined as the field default. The help renderer must NOT
     leak that into the output as `=PydanticUndefined`."""
 
     def test_unset_default_renders_as_optional_no_default(self):
-        def fn_with_unset(owner: str, milestone: int = _UNSET):
+        def fn_with_unset(owner: str, milestone: int = UNSET):
             """Op with a sentinel-defaulted optional param."""
 
         _seed({"gitea_write": {"FnWithUnset": fn_with_unset}})
