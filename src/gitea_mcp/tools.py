@@ -14,7 +14,6 @@ import httpx
 from pydantic import Field
 
 from .client import GiteaClient, GiteaError
-from .config import get_settings
 from .prepare import (
     attach_commit_author,
     build_payload,
