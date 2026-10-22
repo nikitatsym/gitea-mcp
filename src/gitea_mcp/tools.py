@@ -580,7 +580,7 @@ def _basic_auth_identity(username: str | None, password: str | None, scope: str)
     asks for a password. `scope` only shapes the error message - it is the
     instance, not this code, that enforces it.
     """
-    pwd = password or get_settings().gitea_token
+    pwd = password or get_client()._token
     user = username
     if not user:
         user = (get_client().get("/user") or {}).get("login")
