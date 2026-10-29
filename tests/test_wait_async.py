@@ -210,9 +210,9 @@ class TestWaitsListAndDispatch:
         async def flow():
             await _start_run()
             return (
-                tools_mod.waits_list(),
-                tools_mod.waits_list(kind="run", terminated=True),
-                tools_mod.waits_list(kind="job"),
+                await tools_mod.waits_list(),
+                await tools_mod.waits_list(kind="run", terminated=True),
+                await tools_mod.waits_list(kind="job"),
             )
 
         all_waits, run_waits, job_waits = asyncio.run(flow())
@@ -222,43 +222,41 @@ class TestWaitsListAndDispatch:
         assert run_waits[0]["timed_out"] is False
         assert job_waits == []
         with pytest.raises(ValueError, match="kind must be"):
-            tools_mod.waits_list(kind="pipeline")
+            asyncio.run(tools_mod.waits_list(kind="pipeline"))
 
     def test_dispatch_through_meta_tool_path(self):
-        """The async meta-tool must await waiter coroutines and reject ctx
-        injection via params."""
+        """`_dispatch` awaits waiter coroutines and rejects ctx injection via
+        params."""
         seed_run_script(("completed", "success"), jobs=[])
 
         async def flow():
-            coro = server._dispatch(
+            snap = await server._dispatch(
                 "WorkflowRunsWaitStart",
                 "gitea_read",
                 {"owner": "me", "repo": "proj", "run_id": 42, "interval": 0.01},
             )
-            assert asyncio.iscoroutine(coro)
-            snap = await coro
-            poll = server._dispatch(
+            poll = await server._dispatch(
                 "WorkflowRunsWaitPoll", "gitea_read",
                 {"wait_id": snap["wait_id"]},
             )
-            return snap, await poll
+            return snap, poll
 
         snap, poll = asyncio.run(flow())
         assert snap["status"] == "success"
         assert poll["wait_id"] == snap["wait_id"]
 
-        result = server._dispatch(
+        result = asyncio.run(server._dispatch(
             "WorkflowRunsWait", "gitea_read",
             {"owner": "me", "repo": "proj", "run_id": 42, "ctx": "evil"},
-        )
+        ))
         assert "ctx" in result["error"]
 
     def test_wrong_group_hint(self):
         seed(make_handler({}))
-        result = server._dispatch(
+        result = asyncio.run(server._dispatch(
             "WorkflowRunsWaitStart", "gitea_execute",
             {"owner": "me", "repo": "proj", "run_id": 42},
-        )
+        ))
         assert "belongs to 'gitea_read'" in result["error"]
 
     def test_resource_returns_snapshot_json(self):

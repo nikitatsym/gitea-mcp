@@ -58,7 +58,9 @@ def _refusing(exc: httpx.RequestError):
 def test_api_error_keeps_status_method_path_and_body():
     seed(_responding(404, {"message": "repo does not exist"}))
 
-    result = server._dispatch("GetRepo", "gitea_read", {"owner": "me", "repo": "gone"})
+    result = asyncio.run(
+        server._dispatch("GetRepo", "gitea_read", {"owner": "me", "repo": "gone"})
+    )
 
     assert result == {
         "error": (
@@ -70,10 +72,12 @@ def test_api_error_keeps_status_method_path_and_body():
 def test_transport_error_names_request_without_query():
     seed(_refusing(httpx.ConnectError("Connection refused")))
 
-    result = server._dispatch(
-        "ListIssues",
-        "gitea_read",
-        {"owner": "me", "repo": "proj", "assignee": "must-not-leak"},
+    result = asyncio.run(
+        server._dispatch(
+            "ListIssues",
+            "gitea_read",
+            {"owner": "me", "repo": "proj", "assignee": "must-not-leak"},
+        )
     )
 
     assert result == {
@@ -88,7 +92,7 @@ def test_transport_error_names_request_without_query():
 def test_missing_required_param_is_reported():
     seed(_responding(200, {}))
 
-    result = server._dispatch("GetRepo", "gitea_read", {"owner": "me"})
+    result = asyncio.run(server._dispatch("GetRepo", "gitea_read", {"owner": "me"}))
 
     assert "repo" in result["error"]
 
@@ -104,11 +108,11 @@ def test_registered_group_reports_invalid_help_input():
 
 
 def test_async_waiter_failure_maps_at_await_time():
-    """A waiter's body runs only once awaited - outside `_dispatch`'s own guard."""
+    """A waiter's body runs only once awaited; a failure raised there still maps."""
     seed(_responding(500, {"message": "internal server error"}))
 
-    async def flow():
-        coro = server._dispatch(
+    result = asyncio.run(
+        server._dispatch(
             "WorkflowRunsWait",
             "gitea_read",
             {
@@ -116,10 +120,7 @@ def test_async_waiter_failure_maps_at_await_time():
                 "timeout": 60.0, "interval": 0.01, "max_poll_failures": 1,
             },
         )
-        assert asyncio.iscoroutine(coro)
-        return await coro
-
-    result = asyncio.run(flow())
+    )
 
     assert "Gitea API 500" in result["error"]
     assert "/repos/me/proj/actions/runs/42" in result["error"]
@@ -169,7 +170,9 @@ def test_programming_error_still_propagates(monkeypatch):
     monkeypatch.setitem(server._group_ops["gitea_read"], "GetRepo", boom)
 
     with pytest.raises(AttributeError):
-        server._dispatch("GetRepo", "gitea_read", {"owner": "me", "repo": "proj"})
+        asyncio.run(
+            server._dispatch("GetRepo", "gitea_read", {"owner": "me", "repo": "proj"})
+        )
 
 
 def test_cancellation_still_propagates_from_registered_group(monkeypatch):

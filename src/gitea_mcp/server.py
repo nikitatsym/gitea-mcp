@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import json as _json
@@ -9,6 +10,7 @@ import re
 import string
 import types
 import typing
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -151,7 +153,7 @@ def _coerce_call(fn, params: dict, op_name: str, ctx: Context | None = None):
 
     When the target function declares a `ctx` parameter, the live MCP
     Context (when present) is injected after validation. Async functions
-    return their coroutine as-is — the meta-tool awaits it.
+    return their coroutine as-is; `_run_op` awaits it.
     """
     model: type[BaseModel] = fn._params_model
     try:
@@ -404,31 +406,24 @@ def _error_result(exc: Exception) -> dict[str, str]:
     return {"error": _redact_error_text(exc)}
 
 
-async def _await_op(coro):
-    """Await an async op, mapping the same failures `_dispatch` maps.
+async def _run_op(fn: Callable[..., Any], call: Callable[[], Any]) -> Any:
+    """Invoke an op: a sync op in a worker thread, an async op on the event loop.
 
-    An async op's body doesn't run until awaited, so `_dispatch`'s own guard
-    never sees its failures. Cancellation is a BaseException and still
-    propagates, leaving waiter cancellation semantics untouched.
+    Sync ops block on HTTP; on the loop they would stall every request the
+    process serves. `asyncio.to_thread` copies the context, so the bound
+    `client_var` follows the call into the thread.
     """
-    try:
-        return await coro
-    except _EXPECTED_FAILURES as exc:
-        # no-report: expected caller-correctable MCP failure is returned as result data; propagation becomes a contextless tool failure and telemetry would misclassify it as a server fault
-        return _error_result(exc)
+    if inspect.iscoroutinefunction(fn):
+        return await call()
+    return await asyncio.to_thread(call)
 
 
-def _dispatch(operation: str, group_name: str, params: dict, ctx: Context | None = None):
+async def _dispatch(operation: str, group_name: str, params: dict, ctx: Context | None = None):
     """Route an operation call, reporting expected failures as `{"error": ...}`.
 
     Bad params, an unknown operation, a Gitea API error, and a transport failure
     all come back as data; an exception crossing the MCP boundary would reach
     the caller as a contextless tool failure instead.
-
-    Async ops (the waiters) return a coroutine, wrapped so a failure raised at
-    await time maps identically - the meta-tool `tool_fn` awaits it. Sync
-    callers dispatching an async op directly must `asyncio.run(...)` the result
-    themselves.
     """
     try:
         if operation == "help":
@@ -447,12 +442,11 @@ def _dispatch(operation: str, group_name: str, params: dict, ctx: Context | None
                 f"Unknown operation {operation!r} in {group_name}. "
                 "Use operation='help' to list or operation='schema' for details."
             )
-        result = _coerce_call(ops[operation], params, operation, ctx)
+        fn = ops[operation]
+        result = await _run_op(fn, functools.partial(_coerce_call, fn, params, operation, ctx))
     except _EXPECTED_FAILURES as exc:
         # no-report: expected caller-correctable MCP failure is returned as result data; propagation becomes a contextless tool failure and telemetry would misclassify it as a server fault
         return _error_result(exc)
-    if inspect.iscoroutine(result):
-        return _await_op(result)
     return result
 
 
@@ -544,7 +538,7 @@ def _register_tools():
         def _make_tool(gname, gdoc):
             # Async by design so tools that need the MCP Context (progress /
             # log) can `await ctx.report_progress(...)` inside their dispatch
-            # path. Sync ops still work — we only await actual coroutines.
+            # path. Sync ops run in a worker thread via `_run_op`.
             # `ctx` is typed `Context` so MCPServer injects the live request
             # context; it never appears in the tool's JSON schema.
             async def tool_fn(
@@ -553,10 +547,7 @@ def _register_tools():
                 ctx: Context | None = None,
             ):
                 params = params or {}
-                result = _dispatch(operation, gname, params, ctx)
-                if inspect.iscoroutine(result):
-                    result = await result
-                return result
+                return await _dispatch(operation, gname, params, ctx)
             tool_fn.__name__ = gname
             tool_fn.__qualname__ = gname
             tool_fn.__doc__ = gdoc
@@ -564,6 +555,7 @@ def _register_tools():
 
         mcp.tool(structured_output=False)(_compact(_make_tool(group_name, doc)))
 
+    # Async without an await: the SDK runs a sync resource in a worker thread, off the handles' loop.
     @mcp.resource(
         "gitea://waits/{wait_id}",
         name="Gitea wait snapshot",
@@ -574,7 +566,7 @@ def _register_tools():
         ),
         mime_type="application/json",
     )
-    def _read_wait(wait_id: str) -> str:
+    async def _read_wait(wait_id: str) -> str:
         handle = _WAIT_REGISTRY.get(wait_id)
         if handle is None:
             return _json.dumps({

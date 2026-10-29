@@ -19,7 +19,6 @@ src/gitea_mcp/tools.py#workflow_jobs_wait: no-report: the error is returned as t
 src/gitea_mcp/tools.py#workflow_runs_wait: no-report: budgeted transient retry; fatal or budget-exhausted re-raises below
 src/gitea_mcp/tools.py#workflow_runs_wait: no-report: returned to the caller as enrichment_error on a finished wait
 tests/test_wait_async.py#_cleanup: no-report: the expected outcome of the cancel this helper issues
-src/gitea_mcp/server.py#_await_op: no-report: expected caller-correctable MCP failure is returned as result data; propagation becomes a contextless tool failure and telemetry would misclassify it as a server fault
 src/gitea_mcp/server.py#_dispatch: no-report: expected caller-correctable MCP failure is returned as result data; propagation becomes a contextless tool failure and telemetry would misclassify it as a server fault
 src/gitea_mcp/server.py#_safe_root.async_root: no-report: expected caller-correctable MCP failure is returned as result data; propagation becomes a contextless tool failure and telemetry would misclassify it as a server fault
 src/gitea_mcp/server.py#_safe_root.sync_root: no-report: expected caller-correctable MCP failure is returned as result data; propagation becomes a contextless tool failure and telemetry would misclassify it as a server fault

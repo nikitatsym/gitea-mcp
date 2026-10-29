@@ -6279,8 +6279,9 @@ async def workflow_jobs_wait_cancel(wait_id: str):
     return handle.snapshot()
 
 
+# Async without an await: dispatch then keeps it on the loop that mutates the handles.
 @op(gitea_read)
-def waits_list(
+async def waits_list(
     kind: Annotated[str | None, Field(description="Filter by kind: 'run' or 'job'. Omit to list both.")] = None,
     terminated: Annotated[bool | None, Field(description="Filter by termination state. Omit to list all.")] = None,
 ):
