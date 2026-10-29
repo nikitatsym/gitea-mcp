@@ -3723,8 +3723,10 @@ def rerun_workflow_run(
     repo: str,
     run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
 ):
-    """Rerun every job of a workflow run. Starts a new attempt; returns the run it queued."""
-    return unwrap_response(get_client().post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun"))
+    """Rerun every job of a workflow run. Starts a new attempt; returns the compact run it queued."""
+    return unwrap_response(slim_workflow_run(
+        get_client().post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun")
+    ))
 
 @op(gitea_execute)
 def rerun_failed_workflow_jobs(
