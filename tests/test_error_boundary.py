@@ -152,11 +152,11 @@ def test_root_version_reports_transport_failure():
 
 
 def test_root_version_keeps_its_success_shape():
-    seed(_responding(200, {"version": "1.24.0"}))
+    seed(_responding(200, {"version": "28.3.0"}))
 
     result = _data_result(_root_tool("gitea_version")())
 
-    assert result["service"] == {"version": "1.24.0"}
+    assert result["service"] == {"version": "28.3.0"}
     assert result["mcp"]
 
 

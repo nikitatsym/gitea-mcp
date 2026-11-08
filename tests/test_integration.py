@@ -8,6 +8,7 @@ The test simulates a realistic agent workflow:
 11. Admin operations → 12. Cleanup
 """
 
+import time
 from contextlib import contextmanager
 
 import pytest
@@ -32,10 +33,8 @@ def gitea_error(agent, status: int):
     failures as `{"error": ...}` result data, so the check reads the recorded
     result.
 
-    The message body is deliberately not asserted. It is Gitea's prose, not
-    this package's contract, and it drifts between releases: 1.27 answers a
-    missing runner with "runner with id N: resource does not exist" where
-    earlier versions said "Runner not found".
+    The message body is deliberately not asserted: Gitea's prose is not this
+    package's contract.
     """
     before = len(agent.call_log)
     yield
@@ -1449,14 +1448,6 @@ jobs:
         with gitea_error(agent, 404):
             agent.call_raw("get_signing_key")
 
-    def test_197_get_nodeinfo(self, agent):
-        """Agent gets nodeinfo (route needs GITEA__federation__ENABLED).
-
-        1.26 gutted federation: the route now maps to activitypub.NotImplemented,
-        so the only contract left to pin is its 501."""
-        with gitea_error(agent, 501):
-            agent.call("get_nodeinfo")
-
     def test_198_list_repo_reviewers(self, agent):
         """Agent lists repo reviewers."""
         result = agent.call("list_repo_reviewers",
@@ -1849,13 +1840,22 @@ jobs:
     def test_242_cleanup_pr2(self, agent):
         """Clean up PR2 by merging it."""
         pr_idx = TestAgentWorkflow._pr2_index
-        wait_for_pr_mergeable(agent, self.owner, self.repo_name, pr_idx)
-        agent.call("merge_pull_request",
-            owner=self.owner, repo=self.repo_name,
-            index=pr_idx,
-            merge_type="merge",
-            delete_branch_after_merge=True,
-        )
+        deadline = time.monotonic() + 30.0
+        while True:
+            wait_for_pr_mergeable(agent, self.owner, self.repo_name, pr_idx)
+            result = agent.call("merge_pull_request",
+                owner=self.owner, repo=self.repo_name,
+                index=pr_idx,
+                merge_type="merge",
+                delete_branch_after_merge=True,
+            )
+            if result == {"status": "ok"}:
+                break
+            # A delayed branch-update hook can restart the check after the GET.
+            error = result.get("error", "")
+            assert "Gitea API 405 " in error and "'message': 'Please try again later'" in error, result
+            assert time.monotonic() < deadline, result
+            time.sleep(0.1)
         pr = agent.call("get_pull_request",
             owner=self.owner, repo=self.repo_name, index=pr_idx,
         )
@@ -2423,6 +2423,48 @@ jobs:
                 owner=self.owner, type="generic", name="agent-pkg", version="1.0.0",
             )
 
+    def test_371_admin_package_filters(self, agent):
+        """Agent filters package versions and observes a deletion in the admin list."""
+        for name in ("agent-filter-match", "agent-filter-other"):
+            upload_generic_package(name, "1.0.0", "payload.txt", b"filter fixture")
+        packages = agent.call("admin_list_packages", type="generic", query="agent-filter")
+        assert {(p["name"], p["version"]) for p in packages} == {
+            ("agent-filter-match", "1.0.0"), ("agent-filter-other", "1.0.0"),
+        }
+        assert [p["name"] for p in agent.call("admin_list_packages", query="filter-match")] == ["agent-filter-match"]
+        assert agent.call("admin_list_packages", type="npm", query="agent-filter") == []
+        agent.call("delete_package",
+            owner=self.owner, type="generic", name="agent-filter-match", version="1.0.0",
+        )
+        assert agent.call("admin_list_packages", query="filter-match") == []
+        assert [p["name"] for p in agent.call("admin_list_packages", type="generic", query="agent-filter")] == ["agent-filter-other"]
+        agent.call("delete_package",
+            owner=self.owner, type="generic", name="agent-filter-other", version="1.0.0",
+        )
+        assert agent.call("admin_list_packages", query="agent-filter") == []
+
+    def test_372_deploy_token_lifecycle(self, agent):
+        """Agent creates scoped credentials, reads only metadata back, and revokes them."""
+        for read_only in (True, False):
+            token = agent.call("create_deploy_token",
+                owner=self.owner, repo=self.repo_name,
+                title=f"integration-token-{read_only}", read_only=read_only,
+            )
+            assert token["token"].startswith("gdt_")
+            key_id = token["id"]
+            saved = agent.call("get_deploy_key", owner=self.owner, repo=self.repo_name, key_id=key_id)
+            assert saved["key_type"] == "token"
+            assert saved["read_only"] is read_only
+            assert saved["fingerprint"] == token["fingerprint"]
+            assert not saved.get("token")
+            listed = next(k for k in agent.call("list_deploy_keys", owner=self.owner, repo=self.repo_name) if k["id"] == key_id)
+            assert listed["read_only"] is read_only
+            assert not listed.get("token")
+            agent.call("delete_deploy_key", owner=self.owner, repo=self.repo_name, key_id=key_id)
+            assert key_id not in [k["id"] for k in agent.call("list_deploy_keys", owner=self.owner, repo=self.repo_name)]
+            with gitea_error(agent, 404):
+                agent.call("get_deploy_key", owner=self.owner, repo=self.repo_name, key_id=key_id)
+
     # ── 51. Workflows/CI extended ─────────────────────────────
 
     def test_380_workflow_ops(self, agent):
@@ -2515,6 +2557,118 @@ jobs:
             agent.call("get_admin_runner", runner_id=99999)
         with gitea_error(agent, 404):
             agent.call("delete_admin_runner", runner_id=99999)
+
+    @pytest.mark.parametrize("scope", ["repo", "org", "my"])
+    def test_393_project_lifecycle(self, agent, scope):
+        """Agent manages boards and verifies persisted state in every owner scope."""
+        owner = self.org_name if scope == "org" else self.owner
+        repo = "org-test-repo" if scope == "org" else self.repo_name
+        scope_params = {
+            "repo": {"owner": owner, "repo": repo},
+            "org": {"org": owner},
+            "my": {},
+        }[scope]
+        project = agent.call(f"create_{scope}_project", **scope_params,
+            title="Lifecycle board", description="Initial description",
+            card_type="images_and_text", template_type="none",
+        )
+        project_id = project["id"]
+        params = {**scope_params, "project_id": project_id}
+        saved = agent.call(f"get_{scope}_project", **params)
+        assert saved["title"] == "Lifecycle board"
+        assert saved["description"] == "Initial description"
+        assert saved["card_type"] == "images_and_text"
+        assert saved["template_type"] == "none"
+        assert saved["state"] == "open"
+        assert project_id in [p["id"] for p in agent.call(f"list_{scope}_projects", **scope_params)]
+        if scope != "repo":
+            assert project_id in [p["id"] for p in agent.call("list_user_projects", username=owner)]
+
+        agent.call(f"edit_{scope}_project", **params,
+            title="Renamed board", description="", card_type="text_only",
+        )
+        saved = agent.call(f"get_{scope}_project", **params)
+        assert saved["title"] == "Renamed board"
+        assert saved["description"] == ""
+        assert saved["card_type"] == "text_only"
+
+        todo = agent.call(f"create_{scope}_project_column", **params,
+            title="To do", color="#FF0000",
+        )["id"]
+        done = agent.call(f"create_{scope}_project_column", **params, title="Done")["id"]
+        disposable = agent.call(f"create_{scope}_project_column", **params, title="Temporary")["id"]
+        agent.call(f"edit_{scope}_project_column", **params, column_id=todo, sorting=7)
+        assert agent.call(f"get_{scope}_project_column", **params, column_id=todo)["sorting"] == 7
+        agent.call(f"edit_{scope}_project_column", **params,
+            column_id=todo, title="Queued", color="", sorting=0,
+        )
+        column = agent.call(f"get_{scope}_project_column", **params, column_id=todo)
+        assert column["title"] == "Queued"
+        assert column.get("color", "") == ""
+        assert column["sorting"] == 0
+
+        agent.call(f"move_{scope}_project_columns", **params, column_ids=[done, todo, disposable])
+        columns = agent.call(f"list_{scope}_project_columns", **params)
+        assert [c["id"] for c in columns] == [done, todo, disposable]
+        assert [c["sorting"] for c in columns] == [0, 1, 2]
+        with gitea_error(agent, 422):
+            agent.call(f"move_{scope}_project_columns", **params, column_ids=[todo])
+        assert [c["id"] for c in agent.call(f"list_{scope}_project_columns", **params)] == [done, todo, disposable]
+        agent.call(f"set_{scope}_project_default_column", **params, column_id=done)
+        assert [c["id"] for c in agent.call(f"list_{scope}_project_columns", **params) if c["default"]] == [done]
+
+        issue = agent.call("create_issue", owner=owner, repo=repo,
+            title=f"{scope} board issue", body="<brief>Project placement fixture</brief>",
+        )
+        issue_id = agent.call("get_issue", owner=owner, repo=repo, index=issue["number"])["id"]
+        assert issue_id != issue["number"]
+        agent.call(f"add_issue_to_{scope}_project_column", **params, column_id=todo, issue_id=issue_id)
+        assert [i["id"] for i in agent.call(f"list_{scope}_project_column_issues", **params, column_id=todo)] == [issue_id]
+        assert agent.call(f"get_{scope}_project", **params)["num_issues"] == 1
+        foreign_owner = self.owner if scope == "org" else self.org_name
+        foreign_repo = self.repo_name if scope == "org" else "org-test-repo"
+        foreign_issue = agent.call("create_issue", owner=foreign_owner, repo=foreign_repo,
+            title=f"Outside the {scope} project scope",
+            body="<brief>Foreign project scope fixture</brief>",
+        )
+        with gitea_error(agent, 404 if scope == "repo" else 403):
+            agent.call(f"add_issue_to_{scope}_project_column", **params,
+                column_id=todo, issue_id=foreign_issue["id"],
+            )
+        assert [i["id"] for i in agent.call(f"list_{scope}_project_column_issues", **params, column_id=todo)] == [issue_id]
+
+        agent.call(f"move_{scope}_project_issue", **params, issue_id=issue_id, column_id=done, sorting=0)
+        assert agent.call(f"list_{scope}_project_column_issues", **params, column_id=todo) == []
+        assert [i["id"] for i in agent.call(f"list_{scope}_project_column_issues", **params, column_id=done)] == [issue_id]
+        with gitea_error(agent, 404):
+            agent.call(f"remove_issue_from_{scope}_project_column", **params, column_id=todo, issue_id=issue_id)
+        assert agent.call(f"get_{scope}_project", **params)["num_issues"] == 1
+
+        agent.call(f"edit_{scope}_project", **params, state="closed")
+        assert agent.call(f"get_{scope}_project", **params)["state"] == "closed"
+        assert project_id not in [p["id"] for p in agent.call(f"list_{scope}_projects", **scope_params)]
+        assert project_id in [p["id"] for p in agent.call(f"list_{scope}_projects", **scope_params, state="closed")]
+        with gitea_error(agent, 403):
+            agent.call(f"create_{scope}_project_column", **params, title="Rejected while closed")
+        with gitea_error(agent, 403):
+            agent.call(f"move_{scope}_project_issue", **params, issue_id=issue_id, column_id=todo)
+        assert [c["id"] for c in agent.call(f"list_{scope}_project_columns", **params)] == [done, todo, disposable]
+        assert [i["id"] for i in agent.call(f"list_{scope}_project_column_issues", **params, column_id=done)] == [issue_id]
+        agent.call(f"edit_{scope}_project", **params, state="open")
+
+        agent.call(f"remove_issue_from_{scope}_project_column", **params, column_id=done, issue_id=issue_id)
+        assert agent.call(f"list_{scope}_project_column_issues", **params, column_id=done) == []
+        assert agent.call(f"get_{scope}_project", **params)["num_issues"] == 0
+        agent.call(f"delete_{scope}_project_column", **params, column_id=disposable)
+        assert [c["id"] for c in agent.call(f"list_{scope}_project_columns", **params)] == [done, todo]
+        with gitea_error(agent, 422):
+            agent.call(f"delete_{scope}_project_column", **params, column_id=done)
+        assert agent.call(f"get_{scope}_project_column", **params, column_id=done)["default"] is True
+        agent.call(f"delete_{scope}_project", **params)
+        assert project_id not in [p["id"] for p in agent.call(f"list_{scope}_projects", **scope_params, state="all")]
+        with gitea_error(agent, 404):
+            agent.call(f"get_{scope}_project", **params)
+        assert agent.call("get_issue", owner=owner, repo=repo, index=issue["number"])["id"] == issue_id
 
     # ── 53. Org member removal (before cleanup) ───────────────
 

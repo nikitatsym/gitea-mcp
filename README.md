@@ -2,12 +2,16 @@
 
 MCP server for Gitea, built for autonomous AI agents.
 
+The supported Gitea baseline and integration harness are 28.3.0. The gate checks
+every endpoint in that release's Swagger against the hand-written operations.
+
 ## Features
 
 - Repositories, issues, pull requests, releases, labels, milestones
 - File content management (create, read, update, delete)
 - Branches, tags, commits, and status checks
 - Actions / CI workflows and artifacts
+- Projects (boards): columns and issue placement for repository, organization and user projects
 - **Long-running waiters** - `workflow_runs_wait` / `workflow_jobs_wait` block until a run or job finishes (streaming progress via MCP notifications); non-blocking `*_wait_start` / `*_wait_poll(max_block=...)` / `*_wait_cancel` + `waits_list` keep the agent responsive. Waits tolerate transient API errors (`max_poll_failures`, default 3 consecutive), background waits self-terminate after `max_lifetime` (default 2h), and all wait ops live in `gitea_read` - they only ever GET
 - Organizations, teams, and user management
 - Webhooks, deploy keys, notifications, wiki, packages
@@ -97,7 +101,7 @@ missing required fields return a contextual error result with field-level detail
 ## Development
 
 `dev.py` is the single gate entry point (dev-script contract): `lint`
-(ruff + tackbox), `e2e` (boots the dockerized Gitea, runs the integration
+(ruff + mypy + tackbox), `e2e` (boots the dockerized Gitea, runs the integration
 suite), `test` (unit + e2e), `check` (lint + test). Pre-commit and CI both
 run `./dev.py check` — install the hook once per clone with
 `python dev.py hook`, which points `core.hooksPath` at the tracked
@@ -133,7 +137,9 @@ GITEA_ADMIN_USER=testadmin
 GITEA_ADMIN_PASSWORD=testadmin1234
 ```
 
-Integration tests are gated behind `@pytest.mark.integration` and skipped unless `GITEA_URL` + `GITEA_TOKEN` are present — `npm test` will not require docker.
+Integration tests use `@pytest.mark.integration` and are deselected by `npm test`.
+Selecting them requires `GITEA_URL` + `GITEA_TOKEN`; missing configuration fails
+the run rather than silently skipping it.
 
 ## License
 

@@ -159,13 +159,6 @@ gitea_admin_write = Group(
     "admin-scope actions like running cron jobs." + _GROUP_USAGE,
 )
 
-# Backward-compat aliases — pre-v2 code in this module still references
-# `gitea_create` and `gitea_update`. The actual decorator calls are migrated
-# to `gitea_write` below; these aliases keep import paths stable for any
-# external integration that picked them up.
-gitea_create = gitea_write
-gitea_update = gitea_write
-
 # ── Shared parameter annotations ─────────────────────────────────────────────
 # One definition per parameter that repeats across create/edit twins, so the
 # generated help and schema cannot drift between them.
@@ -1376,6 +1369,20 @@ def create_deploy_key(
     body: dict = {"title": title, "key": key, "read_only": read_only}
     return unwrap_response(get_client().post(f"/repos/{owner}/{repo}/keys", json=body))
 
+@op(gitea_write)
+def create_deploy_token(
+    owner: str,
+    repo: str,
+    title: Annotated[str, Field(description="Name of the token, unique among the repository's deploy keys and tokens.")],
+    read_only: Annotated[bool, Field(description="True (default) = clone/fetch only; False = push allowed too.")] = True,
+):
+    """Add a deploy token to a repository: a credential for git over HTTPS scoped to this one repository.
+
+    The plaintext secret is in the response's `token` field and is shown only
+    once. It is listed and deleted like a deploy key (list_deploy_keys,
+    delete_deploy_key)."""
+    return _call("POST", "/repos/{owner}/{repo}/keys/tokens", locals())
+
 @op(gitea_read)
 def get_deploy_key(owner: str, repo: str, key_id: int):
     """Get a deploy key by ID."""
@@ -1767,7 +1774,7 @@ def update_branch(
 def update_branch_protection_priorities(
     owner: str,
     repo: str,
-    ids: Annotated[list[int], Field(description="Branch protection rule IDs (int64) in the order they should be evaluated: the first id gets priority 1, the second 2, and so on. Rules left out of the list keep their current priority. NOTE: Gitea 1.27.3's branch-protection responses carry `priority` but not the rule id, so these ids come from the rule's web-UI URL, not from list_branch_protections.")],
+    ids: Annotated[list[int], Field(description="Branch protection rule IDs (int64) in the order they should be evaluated: the first id gets priority 1, the second 2, and so on. Rules left out of the list keep their current priority. NOTE: Gitea's branch-protection responses carry `priority` but not the rule id, so these ids come from the rule's web-UI URL, not from list_branch_protections.")],
 ):
     """Update the priorities of branch protections for a repository. The lowest priority wins when several rules match a branch."""
     return _call("POST", "/repos/{owner}/{repo}/branch_protections/priority", locals())
@@ -3755,6 +3762,69 @@ def rerun_workflow_job(
         get_client().post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs/{job_id}/rerun")
     ))
 
+@op(gitea_execute)
+def cancel_workflow_run(
+    owner: str,
+    repo: str,
+    run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
+):
+    """Cancel a workflow run and all its unfinished jobs. Returns the compact run.
+
+    Running jobs stop once their runner acknowledges the cancellation; use
+    force_cancel_workflow_run only when a run does not respond to this.
+    Gitea returns 409 for a run that has already finished."""
+    return unwrap_response(slim_workflow_run(
+        get_client().post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/cancel")
+    ))
+
+@op(gitea_execute)
+def force_cancel_workflow_run(
+    owner: str,
+    repo: str,
+    run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
+):
+    """Force-cancel a workflow run that does not respond to cancel_workflow_run. Returns the compact run.
+
+    Marks every unfinished job cancelled at once without waiting for its
+    runner; whatever a runner reports for those jobs afterwards is discarded.
+    Gitea returns 409 for a run that has already finished."""
+    return unwrap_response(slim_workflow_run(
+        get_client().post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/force-cancel")
+    ))
+
+@op(gitea_execute)
+def approve_workflow_run(
+    owner: str,
+    repo: str,
+    run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
+):
+    """Approve a workflow run that waits for approval (e.g. from a fork pull request), so its jobs start. Returns the compact run.
+
+    Approving an already approved run returns it unchanged; a run that never
+    waited for approval gets 409."""
+    return unwrap_response(slim_workflow_run(
+        get_client().post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/approve")
+    ))
+
+@op(gitea_read)
+def download_workflow_run_logs(
+    owner: str,
+    repo: str,
+    run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
+):
+    """Download the logs of every job of a workflow run as one zip, returned base64-encoded under `zip_base64`.
+
+    The archive holds one `.log` entry per job of the latest attempt whose
+    log still exists. Gitea answers 404 when no job has a log yet (nothing
+    has run) or every log has expired; get_workflow_job_logs reads a single
+    job's log as text."""
+    data = get_client().get_bytes(f"/repos/{owner}/{repo}/actions/runs/{run_id}/logs")
+    return {
+        "run_id": run_id,
+        "size_in_bytes": len(data),
+        "zip_base64": base64.b64encode(data).decode(),
+    }
+
 @op(gitea_read)
 def list_action_artifacts(
     owner: str,
@@ -4341,6 +4411,461 @@ def delete_org_label(org: str, label_id: int):
     """Delete an organization label."""
     return unwrap_response(get_client().delete(f"/orgs/{org}/labels/{label_id}"))
 
+# ── Projects ─────────────────────────────────────────────────────────────────
+
+# Gitea serves one project (board) API under three owners - a repository, an
+# organization, the authenticated user - with the same semantics, so each
+# scope gets its own op set over these shared parameter definitions. Every
+# column and issue write needs an open project: Gitea answers 403 while it is
+# closed.
+_ProjectId = Annotated[int, Field(description="Project ID from the project list op of the same scope (NOT the title).")]
+_ProjectColumnId = Annotated[int, Field(description="Column ID from the column list op of the same project.")]
+_ProjectIssueId = Annotated[int, Field(description="GLOBAL issue ID - the `id` field of get_issue - NOT the repository-local issue number.")]
+_ProjectStateFilter = Annotated[Literal["open", "closed", "all"] | None, Field(description="Filter by project state. Omitted = open projects only.")]
+_ProjectTitle = Annotated[str, Field(description="Project title.")]
+_ProjectTitlePatch = Annotated[str | None, Field(description="New project title.")]
+_ProjectDescription = Annotated[str | None, Field(description="Project description (markdown).")]
+_ProjectCardType = Annotated[Literal["text_only", "images_and_text"] | None, Field(description="How issue cards render on the board: 'text_only' (Gitea's default) or 'images_and_text'.")]
+_ProjectTemplateType = Annotated[Literal["none", "basic_kanban", "bug_triage"] | None, Field(description="Starting columns. 'none' (the default) starts without columns; 'basic_kanban' and 'bug_triage' add a default 'Backlog' column plus the instance's template columns (out of the box: To Do, In Progress, Done / Needs Triage, High Priority, Low Priority, Closed).")]
+_ProjectState = Annotated[Literal["open", "closed"] | None, Field(description="'closed' closes the project, 'open' reopens it.")]
+_ProjectColumnTitle = Annotated[str, Field(description="Column title.")]
+_ProjectColumnTitlePatch = Annotated[str | None, Field(description="New column title.")]
+_ProjectColumnColor = Annotated[str | None, Field(description="Column color as 6-digit hex, e.g. '#FF0000'.")]
+_ProjectColumnSorting = Annotated[int | None, Field(description="Position of the column within the project, -128..127 (422 outside that range).")]
+_ProjectColumnIds = Annotated[list[int], Field(description="EVERY column ID of the project, in the new left-to-right order. Gitea answers 422 unless each column appears exactly once.")]
+_ProjectTargetColumnId = Annotated[int, Field(description="Column to move the issue into; must belong to the same project (422 otherwise).")]
+_ProjectIssueSorting = Annotated[int | None, Field(description="Position within the target column, ascending. Omit to append. Negative values sort above the rest; equal values put the newest first.")]
+_ProjectLimit = Annotated[int | None, Field(description="Page size. Server default if omitted.")]
+_ProjectPage = Annotated[int | None, Field(description="1-based page number.")]
+
+
+@op(gitea_read)
+def list_repo_projects(
+    owner: str,
+    repo: str,
+    state: _ProjectStateFilter = None,
+    limit: _ProjectLimit = None,
+    page: _ProjectPage = None,
+):
+    """List a repository's projects, newest first, with their issue counts.
+
+    404 when the repository does not allow repository-level projects."""
+    return _call("GET", "/repos/{owner}/{repo}/projects", locals())
+
+@op(gitea_read)
+def get_repo_project(owner: str, repo: str, project_id: _ProjectId):
+    """Get one project of a repository, with its issue counts."""
+    return _call("GET", "/repos/{owner}/{repo}/projects/{project_id}", locals())
+
+@op(gitea_write)
+def create_repo_project(
+    owner: str,
+    repo: str,
+    title: _ProjectTitle,
+    description: _ProjectDescription = None,
+    card_type: _ProjectCardType = None,
+    template_type: _ProjectTemplateType = None,
+):
+    """Create a project owned by a repository."""
+    return _call("POST", "/repos/{owner}/{repo}/projects", locals())
+
+@op(gitea_write)
+def edit_repo_project(
+    owner: str,
+    repo: str,
+    project_id: _ProjectId,
+    title: _ProjectTitlePatch = None,
+    description: _ProjectDescription = None,
+    card_type: _ProjectCardType = None,
+    state: _ProjectState = None,
+):
+    """Edit a repository's project; omitted fields stay unchanged. Closing it is `state='closed'`."""
+    return _call("PATCH", "/repos/{owner}/{repo}/projects/{project_id}", locals())
+
+@op(gitea_delete)
+def delete_repo_project(owner: str, repo: str, project_id: _ProjectId):
+    """Delete a repository's project with its columns. The issues stay, they only leave the board."""
+    return _call("DELETE", "/repos/{owner}/{repo}/projects/{project_id}", locals())
+
+@op(gitea_read)
+def list_repo_project_columns(
+    owner: str,
+    repo: str,
+    project_id: _ProjectId,
+    limit: _ProjectLimit = None,
+    page: _ProjectPage = None,
+):
+    """List the columns of a repository's project in board order; `default` marks the column new issues land in."""
+    return _call("GET", "/repos/{owner}/{repo}/projects/{project_id}/columns", locals())
+
+@op(gitea_read)
+def get_repo_project_column(owner: str, repo: str, project_id: _ProjectId, column_id: _ProjectColumnId):
+    """Get one column of a repository's project."""
+    return _call("GET", "/repos/{owner}/{repo}/projects/{project_id}/columns/{column_id}", locals())
+
+@op(gitea_write)
+def create_repo_project_column(
+    owner: str,
+    repo: str,
+    project_id: _ProjectId,
+    title: _ProjectColumnTitle,
+    color: _ProjectColumnColor = None,
+):
+    """Add a column to a repository's project."""
+    return _call("POST", "/repos/{owner}/{repo}/projects/{project_id}/columns", locals())
+
+@op(gitea_write)
+def edit_repo_project_column(
+    owner: str,
+    repo: str,
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    title: _ProjectColumnTitlePatch = None,
+    color: _ProjectColumnColor = None,
+    sorting: _ProjectColumnSorting = None,
+):
+    """Edit a column of a repository's project; omitted fields stay unchanged."""
+    return _call("PATCH", "/repos/{owner}/{repo}/projects/{project_id}/columns/{column_id}", locals())
+
+@op(gitea_delete)
+def delete_repo_project_column(owner: str, repo: str, project_id: _ProjectId, column_id: _ProjectColumnId):
+    """Delete a column of a repository's project. The default column cannot be deleted while it is the default."""
+    return _call("DELETE", "/repos/{owner}/{repo}/projects/{project_id}/columns/{column_id}", locals())
+
+@op(gitea_write)
+def move_repo_project_columns(owner: str, repo: str, project_id: _ProjectId, column_ids: _ProjectColumnIds):
+    """Reorder all columns of a repository's project at once."""
+    return _call("POST", "/repos/{owner}/{repo}/projects/{project_id}/columns/move", locals())
+
+@op(gitea_write)
+def set_repo_project_default_column(owner: str, repo: str, project_id: _ProjectId, column_id: _ProjectColumnId):
+    """Make a column the default of a repository's project: the one newly added issues land in."""
+    return _call("POST", "/repos/{owner}/{repo}/projects/{project_id}/columns/{column_id}/default", locals())
+
+@op(gitea_read)
+def list_repo_project_column_issues(
+    owner: str,
+    repo: str,
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    limit: _ProjectLimit = None,
+    page: _ProjectPage = None,
+):
+    """List the issues and pull requests in a column of a repository's project, in board order (full issue objects)."""
+    return _call("GET", "/repos/{owner}/{repo}/projects/{project_id}/columns/{column_id}/issues", locals())
+
+@op(gitea_write)
+def add_issue_to_repo_project_column(
+    owner: str,
+    repo: str,
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    issue_id: _ProjectIssueId,
+):
+    """Put an issue of this repository into a column of its project, adding it to the project first if needed."""
+    return _call("POST", "/repos/{owner}/{repo}/projects/{project_id}/columns/{column_id}/issues/{issue_id}", locals())
+
+@op(gitea_delete)
+def remove_issue_from_repo_project_column(
+    owner: str,
+    repo: str,
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    issue_id: _ProjectIssueId,
+):
+    """Take an issue off a repository's project: it leaves the project, not just the column. 404 unless the issue sits in that column."""
+    return _call("DELETE", "/repos/{owner}/{repo}/projects/{project_id}/columns/{column_id}/issues/{issue_id}", locals())
+
+@op(gitea_write)
+def move_repo_project_issue(
+    owner: str,
+    repo: str,
+    project_id: _ProjectId,
+    issue_id: _ProjectIssueId,
+    column_id: _ProjectTargetColumnId,
+    sorting: _ProjectIssueSorting = None,
+):
+    """Move an issue on a repository's project board to another column or position."""
+    return _call("POST", "/repos/{owner}/{repo}/projects/{project_id}/issues/{issue_id}/move", locals())
+
+@op(gitea_read)
+def list_org_projects(
+    org: str,
+    state: _ProjectStateFilter = None,
+    limit: _ProjectLimit = None,
+    page: _ProjectPage = None,
+):
+    """List an organization's projects, newest first, with their issue counts."""
+    return _call("GET", "/orgs/{org}/projects", locals())
+
+@op(gitea_read)
+def get_org_project(org: str, project_id: _ProjectId):
+    """Get one project of an organization, with its issue counts."""
+    return _call("GET", "/orgs/{org}/projects/{project_id}", locals())
+
+@op(gitea_write)
+def create_org_project(
+    org: str,
+    title: _ProjectTitle,
+    description: _ProjectDescription = None,
+    card_type: _ProjectCardType = None,
+    template_type: _ProjectTemplateType = None,
+):
+    """Create a project owned by an organization; it can hold issues from the org's own repositories."""
+    return _call("POST", "/orgs/{org}/projects", locals())
+
+@op(gitea_write)
+def edit_org_project(
+    org: str,
+    project_id: _ProjectId,
+    title: _ProjectTitlePatch = None,
+    description: _ProjectDescription = None,
+    card_type: _ProjectCardType = None,
+    state: _ProjectState = None,
+):
+    """Edit an organization's project; omitted fields stay unchanged. Closing it is `state='closed'`."""
+    return _call("PATCH", "/orgs/{org}/projects/{project_id}", locals())
+
+@op(gitea_delete)
+def delete_org_project(org: str, project_id: _ProjectId):
+    """Delete an organization's project with its columns. The issues stay, they only leave the board."""
+    return _call("DELETE", "/orgs/{org}/projects/{project_id}", locals())
+
+@op(gitea_read)
+def list_org_project_columns(
+    org: str,
+    project_id: _ProjectId,
+    limit: _ProjectLimit = None,
+    page: _ProjectPage = None,
+):
+    """List the columns of an organization's project in board order; `default` marks the column new issues land in."""
+    return _call("GET", "/orgs/{org}/projects/{project_id}/columns", locals())
+
+@op(gitea_read)
+def get_org_project_column(org: str, project_id: _ProjectId, column_id: _ProjectColumnId):
+    """Get one column of an organization's project."""
+    return _call("GET", "/orgs/{org}/projects/{project_id}/columns/{column_id}", locals())
+
+@op(gitea_write)
+def create_org_project_column(
+    org: str,
+    project_id: _ProjectId,
+    title: _ProjectColumnTitle,
+    color: _ProjectColumnColor = None,
+):
+    """Add a column to an organization's project."""
+    return _call("POST", "/orgs/{org}/projects/{project_id}/columns", locals())
+
+@op(gitea_write)
+def edit_org_project_column(
+    org: str,
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    title: _ProjectColumnTitlePatch = None,
+    color: _ProjectColumnColor = None,
+    sorting: _ProjectColumnSorting = None,
+):
+    """Edit a column of an organization's project; omitted fields stay unchanged."""
+    return _call("PATCH", "/orgs/{org}/projects/{project_id}/columns/{column_id}", locals())
+
+@op(gitea_delete)
+def delete_org_project_column(org: str, project_id: _ProjectId, column_id: _ProjectColumnId):
+    """Delete a column of an organization's project. The default column cannot be deleted while it is the default."""
+    return _call("DELETE", "/orgs/{org}/projects/{project_id}/columns/{column_id}", locals())
+
+@op(gitea_write)
+def move_org_project_columns(org: str, project_id: _ProjectId, column_ids: _ProjectColumnIds):
+    """Reorder all columns of an organization's project at once."""
+    return _call("POST", "/orgs/{org}/projects/{project_id}/columns/move", locals())
+
+@op(gitea_write)
+def set_org_project_default_column(org: str, project_id: _ProjectId, column_id: _ProjectColumnId):
+    """Make a column the default of an organization's project: the one newly added issues land in."""
+    return _call("POST", "/orgs/{org}/projects/{project_id}/columns/{column_id}/default", locals())
+
+@op(gitea_read)
+def list_org_project_column_issues(
+    org: str,
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    limit: _ProjectLimit = None,
+    page: _ProjectPage = None,
+):
+    """List the issues and pull requests in a column of an organization's project that you can read, in board order (full issue objects)."""
+    return _call("GET", "/orgs/{org}/projects/{project_id}/columns/{column_id}/issues", locals())
+
+@op(gitea_write)
+def add_issue_to_org_project_column(
+    org: str,
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    issue_id: _ProjectIssueId,
+):
+    """Put an issue into a column of an organization's project, adding it to the project first if needed.
+
+    The issue must live in one of the organization's repositories (403 otherwise); 423 when that repository is archived."""
+    return _call("POST", "/orgs/{org}/projects/{project_id}/columns/{column_id}/issues/{issue_id}", locals())
+
+@op(gitea_delete)
+def remove_issue_from_org_project_column(
+    org: str,
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    issue_id: _ProjectIssueId,
+):
+    """Take an issue off an organization's project: it leaves the project, not just the column. 404 unless the issue sits in that column."""
+    return _call("DELETE", "/orgs/{org}/projects/{project_id}/columns/{column_id}/issues/{issue_id}", locals())
+
+@op(gitea_write)
+def move_org_project_issue(
+    org: str,
+    project_id: _ProjectId,
+    issue_id: _ProjectIssueId,
+    column_id: _ProjectTargetColumnId,
+    sorting: _ProjectIssueSorting = None,
+):
+    """Move an issue on an organization's project board to another column or position."""
+    return _call("POST", "/orgs/{org}/projects/{project_id}/issues/{issue_id}/move", locals())
+
+@op(gitea_read)
+def list_user_projects(
+    username: Annotated[str, Field(description="USERNAME or organization name whose projects to list.")],
+    state: _ProjectStateFilter = None,
+    limit: _ProjectLimit = None,
+    page: _ProjectPage = None,
+):
+    """List the projects owned by a user (or organization) that you can see, newest first. list_my_projects covers your own."""
+    return _call("GET", "/users/{username}/projects", locals())
+
+@op(gitea_read)
+def list_my_projects(
+    state: _ProjectStateFilter = None,
+    limit: _ProjectLimit = None,
+    page: _ProjectPage = None,
+):
+    """List the projects owned by the authenticated user, newest first, with their issue counts."""
+    return _call("GET", "/user/projects", locals())
+
+@op(gitea_read)
+def get_my_project(project_id: _ProjectId):
+    """Get one of the authenticated user's projects, with its issue counts."""
+    return _call("GET", "/user/projects/{project_id}", locals())
+
+@op(gitea_write)
+def create_my_project(
+    title: _ProjectTitle,
+    description: _ProjectDescription = None,
+    card_type: _ProjectCardType = None,
+    template_type: _ProjectTemplateType = None,
+):
+    """Create a project owned by the authenticated user; it can hold issues from your own repositories."""
+    return _call("POST", "/user/projects", locals())
+
+@op(gitea_write)
+def edit_my_project(
+    project_id: _ProjectId,
+    title: _ProjectTitlePatch = None,
+    description: _ProjectDescription = None,
+    card_type: _ProjectCardType = None,
+    state: _ProjectState = None,
+):
+    """Edit one of the authenticated user's projects; omitted fields stay unchanged. Closing it is `state='closed'`."""
+    return _call("PATCH", "/user/projects/{project_id}", locals())
+
+@op(gitea_delete)
+def delete_my_project(project_id: _ProjectId):
+    """Delete one of the authenticated user's projects with its columns. The issues stay, they only leave the board."""
+    return _call("DELETE", "/user/projects/{project_id}", locals())
+
+@op(gitea_read)
+def list_my_project_columns(
+    project_id: _ProjectId,
+    limit: _ProjectLimit = None,
+    page: _ProjectPage = None,
+):
+    """List the columns of one of your projects in board order; `default` marks the column new issues land in."""
+    return _call("GET", "/user/projects/{project_id}/columns", locals())
+
+@op(gitea_read)
+def get_my_project_column(project_id: _ProjectId, column_id: _ProjectColumnId):
+    """Get one column of one of your projects."""
+    return _call("GET", "/user/projects/{project_id}/columns/{column_id}", locals())
+
+@op(gitea_write)
+def create_my_project_column(
+    project_id: _ProjectId,
+    title: _ProjectColumnTitle,
+    color: _ProjectColumnColor = None,
+):
+    """Add a column to one of your projects."""
+    return _call("POST", "/user/projects/{project_id}/columns", locals())
+
+@op(gitea_write)
+def edit_my_project_column(
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    title: _ProjectColumnTitlePatch = None,
+    color: _ProjectColumnColor = None,
+    sorting: _ProjectColumnSorting = None,
+):
+    """Edit a column of one of your projects; omitted fields stay unchanged."""
+    return _call("PATCH", "/user/projects/{project_id}/columns/{column_id}", locals())
+
+@op(gitea_delete)
+def delete_my_project_column(project_id: _ProjectId, column_id: _ProjectColumnId):
+    """Delete a column of one of your projects. The default column cannot be deleted while it is the default."""
+    return _call("DELETE", "/user/projects/{project_id}/columns/{column_id}", locals())
+
+@op(gitea_write)
+def move_my_project_columns(project_id: _ProjectId, column_ids: _ProjectColumnIds):
+    """Reorder all columns of one of your projects at once."""
+    return _call("POST", "/user/projects/{project_id}/columns/move", locals())
+
+@op(gitea_write)
+def set_my_project_default_column(project_id: _ProjectId, column_id: _ProjectColumnId):
+    """Make a column the default of one of your projects: the one newly added issues land in."""
+    return _call("POST", "/user/projects/{project_id}/columns/{column_id}/default", locals())
+
+@op(gitea_read)
+def list_my_project_column_issues(
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    limit: _ProjectLimit = None,
+    page: _ProjectPage = None,
+):
+    """List the issues and pull requests in a column of one of your projects that you can read, in board order (full issue objects)."""
+    return _call("GET", "/user/projects/{project_id}/columns/{column_id}/issues", locals())
+
+@op(gitea_write)
+def add_issue_to_my_project_column(
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    issue_id: _ProjectIssueId,
+):
+    """Put an issue into a column of one of your projects, adding it to the project first if needed.
+
+    The issue must live in one of your own repositories (403 otherwise); 423 when that repository is archived."""
+    return _call("POST", "/user/projects/{project_id}/columns/{column_id}/issues/{issue_id}", locals())
+
+@op(gitea_delete)
+def remove_issue_from_my_project_column(
+    project_id: _ProjectId,
+    column_id: _ProjectColumnId,
+    issue_id: _ProjectIssueId,
+):
+    """Take an issue off one of your projects: it leaves the project, not just the column. 404 unless the issue sits in that column."""
+    return _call("DELETE", "/user/projects/{project_id}/columns/{column_id}/issues/{issue_id}", locals())
+
+@op(gitea_write)
+def move_my_project_issue(
+    project_id: _ProjectId,
+    issue_id: _ProjectIssueId,
+    column_id: _ProjectTargetColumnId,
+    sorting: _ProjectIssueSorting = None,
+):
+    """Move an issue on one of your project boards to another column or position."""
+    return _call("POST", "/user/projects/{project_id}/issues/{issue_id}/move", locals())
+
 # ── Notifications ────────────────────────────────────────────────────────────
 
 
@@ -4662,6 +5187,16 @@ def admin_delete_user(
 def admin_list_orgs():
     """List all organizations (admin only)."""
     return unwrap_response(get_client().paginate("/admin/orgs"))
+
+@op(gitea_admin_read)
+def admin_list_packages(
+    type: Annotated[_PACKAGE_TYPES | None, Field(description="Filter by Gitea package registry type. Omit to list every type.")] = None,
+    query: Annotated[str | None, Field(description="Package name filter (substring match).")] = None,
+    limit: Annotated[int | None, Field(description="Page size. Server default if omitted.")] = None,
+    page: Annotated[int | None, Field(description="1-based page number.")] = None,
+):
+    """List the packages of every owner on the instance (admin only), one entry per package version."""
+    return _call("GET", "/admin/packages", locals(), rename={"query": "q"})
 
 @op(gitea_admin_read)
 def admin_list_cron_jobs():
@@ -5346,11 +5881,6 @@ def get_signing_key_ssh():
     configured; get_signing_key is the GPG counterpart. An instance with no
     SSH signing key configured answers 404 or an empty body."""
     return get_client().get_text("/signing-key.pub")
-
-@op(gitea_read)
-def get_nodeinfo():
-    """Get NodeInfo for the Gitea instance."""
-    return unwrap_response(get_client().get("/nodeinfo"))
 
 @op(gitea_read)
 def get_gitignore_template(

@@ -133,34 +133,6 @@ NO_WIRE_CALL_OK: frozenset[str] = frozenset({
 })
 
 
-@dataclass(frozen=True)
-class _SpecGap:
-    """One call an op deliberately makes to an endpoint the spec does not cover.
-
-    The method and path are pinned, not just the op name: a waiver covering the
-    whole op would also excuse a typo in the very path it documents, and would
-    hide a second call the op grows later.
-    """
-
-    method: str
-    path: str
-    why: str
-
-    @property
-    def call(self) -> str:
-        return f"{self.method} {self.path}"
-
-
-# Reviewed entries only. The tests fail if the endpoint reappears in the spec,
-# and if the op stops making exactly this call.
-SPEC_GAPS: dict[str, _SpecGap] = {
-    "get_nodeinfo": _SpecGap(
-        "GET",
-        "/nodeinfo",
-        "gone from the spec and a 501 stub since Gitea 1.26; kept for older live instances",
-    ),
-}
-
 # Endpoints whose handler reads a body the spec never declares: Gitea's
 # `swagger:operation` comment for them carries no `parameters:` block, so the
 # generated spec says the endpoint accepts nothing while the handler binds a
@@ -894,15 +866,10 @@ def swagger(gitea_instance: str) -> _Swagger:
     return _Swagger(response.json())
 
 
-def _is_spec_gap(op: str, call: _WireCall) -> bool:
-    gap = SPEC_GAPS.get(op)
-    return gap is not None and (gap.method, gap.path) == (call.method, call.path)
-
-
 def _checked_calls() -> Iterator[tuple[str, _WireCall]]:
-    """Every readable call whose endpoint is expected to be in the spec."""
+    """Every readable call made by an operation."""
     for op, calls in sorted(_extract_ops().calls.items()):
-        yield from ((op, call) for call in calls if not _is_spec_gap(op, call))
+        yield from ((op, call) for call in calls)
 
 
 def _endpoints_we_call(swagger: _Swagger) -> Iterator[tuple[str, _Endpoint]]:
@@ -955,15 +922,6 @@ def test_allowlists_have_no_stale_entries() -> None:
     assert not stale, (
         "These ops read cleanly now - drop them from UNANALYZABLE_OK so the "
         f"allowlist can only shrink: {stale}"
-    )
-    orphaned = sorted(
-        f"{op}: {gap.call}"
-        for op, gap in SPEC_GAPS.items()
-        if not any(_is_spec_gap(op, call) for call in ops.calls.get(op, ()))
-    )
-    assert not orphaned, (
-        "SPEC_GAPS entries name a call their op no longer makes, so the gap "
-        f"covers nothing and the real call goes unchecked: {orphaned}"
     )
     reached = {(call.method, call.path) for calls in ops.calls.values() for call in calls}
     unused = sorted(f"{method} {path}" for method, path in UNDECLARED_BODY_OK if (method, path) not in reached)
@@ -1128,7 +1086,7 @@ def test_query_enum_values_match_swagger(swagger: _Swagger) -> None:
         wire_of = _arg_wire_names(fn)
         for call in calls:
             matches = swagger.candidates(call.path, call.method)
-            if _is_spec_gap(op, call) or len(matches) != 1:
+            if len(matches) != 1:
                 continue
             enums = swagger.endpoints[matches[0], call.method].query_enums
             for arg, annotation in hints.items():
@@ -1152,23 +1110,14 @@ def test_query_enum_values_match_swagger(swagger: _Swagger) -> None:
 def test_wire_calls_match_swagger(swagger: _Swagger) -> None:
     findings: list[str] = []
     for op, calls in sorted(_extract_ops().calls.items()):
-        gap = SPEC_GAPS.get(op)
-        # A list, not a set: a gap waives one call, so a second call to the same
-        # missing endpoint has to surface rather than collapse into the first.
-        unserved: list[str] = []
         for call in calls:
             where = f"{op}: {call.endpoint}"
             matches = swagger.candidates(call.path, call.method)
             if not matches:
-                unserved.append(call.endpoint)
-                if gap is None:
-                    findings.append(
-                        f"{where}: no such endpoint in the spec; it has "
-                        f"{swagger.describe_pool(call.path)}"
-                    )
-                continue
-            if _is_spec_gap(op, call):
-                findings.append(f"{where}: endpoint is back in the spec - drop it from SPEC_GAPS")
+                findings.append(
+                    f"{where}: no such endpoint in the spec; it has "
+                    f"{swagger.describe_pool(call.path)}"
+                )
                 continue
             if len(matches) > 1:
                 findings.append(f"{where}: ambiguous, matches spec paths {matches}")
@@ -1201,11 +1150,6 @@ def test_wire_calls_match_swagger(swagger: _Swagger) -> None:
                         f"{where}: body fields {bad_body} are not in the spec; "
                         f"it accepts {sorted(endpoint.body)}"
                     )
-        if gap is not None and sorted(unserved) != [gap.call]:
-            findings.append(
-                f"{op}: recorded as absent from the spec for [{gap.call}], but its "
-                f"unserved calls are {sorted(unserved) or 'none - drop it from SPEC_GAPS'}"
-            )
     assert not findings, (
         f"{len(findings)} call(s) disagree with the Gitea spec. Gitea drops "
         "unknown names silently, so each of these is a request that quietly "

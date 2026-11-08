@@ -19,8 +19,7 @@ from gitea_mcp.registry import Group
 
 
 def _real_groups() -> dict[str, Group]:
-    """Registered groups by name. `gitea_create`/`gitea_update` alias
-    `gitea_write`, so key by name to collapse them."""
+    """Registered groups by name."""
     return {
         obj.name: obj
         for _, obj in inspect.getmembers(tools, lambda o: isinstance(o, Group))

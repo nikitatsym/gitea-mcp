@@ -257,11 +257,7 @@ def upload_generic_package(
 
 
 def _require_env(*names: str) -> dict[str, str]:
-    """Skip the calling integration test if any of the env vars are missing.
-
-    Docker lifecycle now lives in `scripts/bootstrap.py` (run via
-    `npm run gitea:up`); this fixture path just reads what bootstrap produced.
-    """
+    """Read integration configuration provisioned by scripts/bootstrap.py."""
     missing = [n for n in names if not os.environ.get(n)]
     if missing:
         pytest.skip(
@@ -289,9 +285,8 @@ def configure_env(gitea_instance: str, gitea_token: str):
     enable public-repo creation for the test session, and reset the cached
     client so subsequent calls use the fresh settings.
 
-    Mirrors the pre-split behaviour exactly — without `set_allow_public(True)`,
-    integration tests that create public repos start failing because the
-    production-default safeguard kicks in.
+    Public-repo creation is enabled only for the integration fixture; production
+    keeps its private-by-default safeguard.
     """
     os.environ["GITEA_URL"] = gitea_instance
     os.environ["GITEA_TOKEN"] = gitea_token

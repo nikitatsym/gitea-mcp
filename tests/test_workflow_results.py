@@ -1,8 +1,9 @@
-"""Workflow action results use the same compact shapes as read operations."""
+"""Workflow run results: actions return the compact run shape read ops use, the logs archive comes back base64-encoded."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 
 import httpx
 import pytest
@@ -72,3 +73,56 @@ def test_rerun_workflow_run_propagates_api_error():
     assert raised.value.method == "POST"
     assert raised.value.path == "/repos/me/proj/actions/runs/42/rerun"
     assert raised.value.body == {"message": "workflow run is still running"}
+
+
+@pytest.mark.parametrize(
+    ("operation", "suffix"),
+    [
+        ("CancelWorkflowRun", "cancel"),
+        ("ForceCancelWorkflowRun", "force-cancel"),
+        ("ApproveWorkflowRun", "approve"),
+    ],
+)
+def test_run_state_actions_return_slim_run(operation, suffix):
+    payload = {
+        **run_payload(42, "completed", "cancelled"),
+        "repository": {"id": 9, "full_name": "me/proj"},
+        "actor": {"id": 3, "login": "me"},
+        "html_url": "https://gitea.example.com/me/proj/actions/runs/1",
+    }
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        return httpx.Response(200, json=payload)
+
+    seed(handler)
+    result = asyncio.run(
+        server._dispatch(
+            operation, "gitea_execute",
+            {"owner": "me", "repo": "proj", "run_id": 42},
+        )
+    )
+
+    assert requests == [("POST", f"{RUN_PATH}/{suffix}")]
+    assert result == {
+        **run_payload(42, "completed", "cancelled"),
+        "head_sha": "deadbeefdead",
+    }
+
+
+def test_download_workflow_run_logs_returns_the_zip_base64():
+    archive = b"PK\x03\x04 not really a zip, the op passes bytes through"
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        return httpx.Response(200, content=archive, headers={"Content-Type": "application/zip"})
+
+    seed(handler)
+    result = tools.download_workflow_run_logs(owner="me", repo="proj", run_id=42)
+
+    assert requests == [("GET", f"{RUN_PATH}/logs")]
+    assert result["run_id"] == 42
+    assert result["size_in_bytes"] == len(archive)
+    assert base64.b64decode(result["zip_base64"]) == archive
