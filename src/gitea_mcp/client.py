@@ -21,6 +21,13 @@ class GiteaError(Exception):
         super().__init__(f"Gitea API {status} {method} {path}: {body}")
 
 
+class ResponseTooLarge(ValueError):
+    """A response body passed the size its caller allows; the rest was not read."""
+
+    def __init__(self, method: str, path: str, max_bytes: int):
+        super().__init__(f"Gitea API {method} {path}: the response passed {max_bytes} bytes")
+
+
 class GiteaClient:
     def __init__(
         self,
@@ -53,9 +60,13 @@ class GiteaClient:
 
     # ── low-level ────────────────────────────────────────────
 
-    def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+    def _request(self, method: str, path: str, *, stream: bool = False, **kwargs) -> httpx.Response:
+        """Send one request; with `stream` the body is left unread and the caller closes the response."""
         start = time.perf_counter()
-        r = self._http.request(method, path, **kwargs)
+        if stream:
+            r = self._http.send(self._http.build_request(method, path, **kwargs), stream=True)
+        else:
+            r = self._http.request(method, path, **kwargs)
         duration_ms = int((time.perf_counter() - start) * 1000)
         status = r.status_code
         if status >= 500:
@@ -66,6 +77,7 @@ class GiteaClient:
             level = logging.INFO
         _log.log(level, "%s %s %d %dms", method, path, status, duration_ms)
         if status >= 400:
+            r.read()
             try:
                 body = r.json()
             except ValueError:
@@ -73,6 +85,20 @@ class GiteaClient:
                 body = r.text
             raise GiteaError(status, method, path, body)
         return r
+
+    def _bytes_capped(self, method: str, path: str, max_bytes: int) -> bytes:
+        r = self._request(method, path, stream=True)
+        chunks: list[bytes] = []
+        size = 0
+        try:
+            for chunk in r.iter_bytes():
+                size += len(chunk)
+                if size > max_bytes:
+                    raise ResponseTooLarge(method, path, max_bytes)
+                chunks.append(chunk)
+        finally:
+            r.close()
+        return b"".join(chunks)
 
     def _json(self, method: str, path: str, **kwargs):
         r = self._request(method, path, **kwargs)
@@ -127,6 +153,10 @@ class GiteaClient:
     def get_bytes(self, path: str, params: dict | None = None) -> bytes:
         """Raw response body, for endpoints that produce binary (media files)."""
         return self._bytes("GET", path, params=params)
+
+    def get_bytes_capped(self, path: str, *, max_bytes: int) -> bytes:
+        """Raw response body, read in chunks; ResponseTooLarge once it passes `max_bytes`."""
+        return self._bytes_capped("GET", path, max_bytes)
 
     def download(self, path: str, params: dict | None = None) -> bytes:
         """GET a file the API serves via redirect, returning the bytes it lands on.

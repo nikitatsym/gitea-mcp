@@ -2,10 +2,13 @@
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import re
 import time
+import zipfile
+import zlib
 from contextvars import ContextVar
 from importlib.metadata import version as _pkg_version
 from typing import Annotated, Literal
@@ -13,7 +16,7 @@ from typing import Annotated, Literal
 import httpx
 from pydantic import Field
 
-from .client import GiteaClient, GiteaError
+from .client import GiteaClient, GiteaError, ResponseTooLarge
 from .prepare import (
     attach_commit_author,
     build_payload,
@@ -3628,6 +3631,16 @@ def get_workflow_job(owner: str, repo: str, job_id: int):
     """Get a workflow job by its ID."""
     return unwrap_response(slim_job(get_client().get(f"/repos/{owner}/{repo}/actions/jobs/{job_id}")))
 
+def _grep_tail(text: str, filter: str | None, tail: int | None) -> str:
+    """Keep the lines matching `filter` (case-insensitive regex), then the last `tail` of them."""
+    lines = text.splitlines()
+    if filter:
+        pat = re.compile(filter, re.IGNORECASE)
+        lines = [line for line in lines if pat.search(line)]
+    if tail and tail > 0:
+        lines = lines[-tail:]
+    return "\n".join(lines)
+
 @op(gitea_read)
 def get_workflow_job_logs(
     owner: str,
@@ -3644,13 +3657,7 @@ def get_workflow_job_logs(
     text = get_client().get_text(
         f"/repos/{owner}/{repo}/actions/jobs/{job_id}/logs"
     )
-    lines = text.splitlines()
-    if filter:
-        pat = re.compile(filter, re.IGNORECASE)
-        lines = [line for line in lines if pat.search(line)]
-    if tail and tail > 0:
-        lines = lines[-tail:]
-    return "\n".join(lines)
+    return _grep_tail(text, filter, tail)
 
 @op(gitea_delete)
 def delete_workflow_run(
@@ -3806,24 +3813,73 @@ def approve_workflow_run(
         get_client().post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/approve")
     ))
 
+_RUN_LOGS_MAX_BYTES = 20 * 2**20
+
+
+def _too_large(where: str, what: str) -> ValueError:
+    return ValueError(
+        f"{where}: {what} exceeds the {_RUN_LOGS_MAX_BYTES // 2**20} MiB cap; "
+        "read the jobs one by one with get_workflow_job_logs"
+    )
+
+
+def _read_run_log_files(archive: bytes, where: str) -> list[tuple[str, str]]:
+    """Every file of a run's log archive as (name, text), in archive order.
+
+    Files are read one by one, not by name: Gitea can pack two under the same name.
+    """
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(archive))
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"{where}: the log archive is not a readable zip: {exc}") from exc
+    files: list[tuple[str, str]] = []
+    unpacked = 0
+    with zf:
+        for info in zf.infolist():
+            chunks: list[bytes] = []
+            try:
+                with zf.open(info) as f:
+                    while chunk := f.read(2**16):
+                        unpacked += len(chunk)
+                        if unpacked > _RUN_LOGS_MAX_BYTES:
+                            raise _too_large(where, "the unpacked log text")
+                        chunks.append(chunk)
+                text = b"".join(chunks).decode("utf-8")
+            except (zipfile.BadZipFile, zlib.error, EOFError, UnicodeDecodeError) as exc:
+                raise ValueError(f"{where}: log file {info.filename!r}: {exc}") from exc
+            files.append((info.filename, text))
+    return files
+
+
 @op(gitea_read)
-def download_workflow_run_logs(
+def get_workflow_run_logs(
     owner: str,
     repo: str,
     run_id: Annotated[int, Field(description="Internal run ID from list_workflow_runs (NOT run_number).")],
+    tail: Annotated[int | None, Field(description="Per log file: return only the last N lines. Set to 0 (or null) for whole logs.")] = 100,
+    filter: Annotated[str | None, Field(description="Case-insensitive Python regex; per log file, only matching lines are kept (e.g. 'error|fail|fatal'). Applied before `tail`.")] = None,
 ):
-    """Download the logs of every job of a workflow run as one zip, returned base64-encoded under `zip_base64`.
+    """Get the logs of a workflow run's latest attempt as text, one item per job log Gitea packs.
 
-    The archive holds one `.log` entry per job of the latest attempt whose
-    log still exists. Gitea answers 404 when no job has a log yet (nothing
-    has run) or every log has expired; get_workflow_job_logs reads a single
-    job's log as text."""
-    data = get_client().get_bytes(f"/repos/{owner}/{repo}/actions/runs/{run_id}/logs")
-    return {
-        "run_id": run_id,
-        "size_in_bytes": len(data),
-        "zip_base64": base64.b64encode(data).decode(),
-    }
+    Returns [{file, log}] in archive order. `file` is Gitea's name for the log,
+    `{workflow}-{job name}-{task id}.log` with `.`, `-` and characters unsafe in
+    file names replaced by `_` and very long names cut, so it does not identify
+    the job: read one job's log by its id with get_workflow_job_logs. A job
+    without a log (never run, or expired) is missing, and so is one whose log
+    Gitea fails to open; Gitea answers 404 when no job has a log. The archive
+    and the unpacked log text are capped at 20 MiB each; past either cap the
+    call fails."""
+    where = f"run {run_id} of {owner}/{repo}"
+    try:
+        archive = get_client().get_bytes_capped(
+            f"/repos/{owner}/{repo}/actions/runs/{run_id}/logs", max_bytes=_RUN_LOGS_MAX_BYTES
+        )
+    except ResponseTooLarge as exc:
+        raise _too_large(where, "the log archive") from exc
+    return [
+        {"file": name, "log": _grep_tail(text, filter, tail)}
+        for name, text in _read_run_log_files(archive, where)
+    ]
 
 @op(gitea_read)
 def list_action_artifacts(
@@ -5293,9 +5349,12 @@ def admin_delete_user_public_key(username: str, key_id: int):
     return unwrap_response(get_client().delete(f"/admin/users/{username}/keys/{key_id}"))
 
 @op(gitea_admin_read)
-def admin_list_unadopted_repos():
-    """List unadopted repositories (admin only)."""
-    return unwrap_response(get_client().paginate("/admin/unadopted"))
+def admin_list_unadopted_repos(
+    query: Annotated[str | None, Field(description="Glob over 'owner' or 'owner/repo' (e.g. 'alice', 'alice/old-*'). Omitted = every unadopted repository.")] = None,
+):
+    """List unadopted repositories (admin only): repository directories on disk with no database row, as 'owner/repo' strings."""
+    params = build_payload(locals())
+    return unwrap_response(get_client().paginate("/admin/unadopted", params=params or None))
 
 @op(gitea_admin_write)
 def admin_adopt_repo(owner: str, repo: str):

@@ -1,9 +1,8 @@
-"""Workflow run results: actions return the compact run shape read ops use, the logs archive comes back base64-encoded."""
+"""Workflow run results: actions return the compact run shape read ops use."""
 
 from __future__ import annotations
 
 import asyncio
-import base64
 
 import httpx
 import pytest
@@ -109,20 +108,3 @@ def test_run_state_actions_return_slim_run(operation, suffix):
         **run_payload(42, "completed", "cancelled"),
         "head_sha": "deadbeefdead",
     }
-
-
-def test_download_workflow_run_logs_returns_the_zip_base64():
-    archive = b"PK\x03\x04 not really a zip, the op passes bytes through"
-    requests = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append((request.method, request.url.path))
-        return httpx.Response(200, content=archive, headers={"Content-Type": "application/zip"})
-
-    seed(handler)
-    result = tools.download_workflow_run_logs(owner="me", repo="proj", run_id=42)
-
-    assert requests == [("GET", f"{RUN_PATH}/logs")]
-    assert result["run_id"] == 42
-    assert result["size_in_bytes"] == len(archive)
-    assert base64.b64decode(result["zip_base64"]) == archive

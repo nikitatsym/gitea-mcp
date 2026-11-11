@@ -253,6 +253,18 @@ def upload_generic_package(
     r.raise_for_status()
 
 
+def plant_bare_repo(owner: str, name: str) -> None:
+    """Create an unadopted repo: a bare repository on disk with no database row, which the API cannot make."""
+    subprocess.run(
+        [
+            "docker", "compose", "-f", str(TESTS_DIR / "docker-compose.yml"),
+            "exec", "-T", "-u", "git", "gitea",
+            "git", "init", "--bare", "--quiet", f"/data/git/repositories/{owner}/{name}.git",
+        ],
+        check=True,
+    )
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 

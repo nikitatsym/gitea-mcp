@@ -9,10 +9,11 @@ The test simulates a realistic agent workflow:
 """
 
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 import pytest
 from conftest import (
+    plant_bare_repo,
     upload_generic_package,
     wait_for_pr_mergeable,
     wait_for_workflow_run,
@@ -43,6 +44,23 @@ def gitea_error(agent, status: int):
     result = made[-1]["result"]
     error = result.get("error", "") if isinstance(result, dict) else ""
     assert f"Gitea API {status} " in error, f"expected {status}, got: {error!r}"
+
+
+def _ok(agent, op: str, **params) -> None:
+    """Call a delete-style op and assert it succeeded."""
+    assert agent.call(op, **params) == {"status": "ok"}
+
+
+def _remove_planted(agent, name: str) -> None:
+    """Remove a planted repository in whatever form it is left: on disk only, adopted, or gone."""
+    if f"{ADMIN_USER}/{name}" in agent.call("admin_list_unadopted_repos"):
+        _ok(agent, "admin_delete_unadopted_repo", owner=ADMIN_USER, repo=name)
+        return
+    repo = agent.call("get_repo", owner=ADMIN_USER, repo=name)
+    if "error" in repo:
+        assert "Gitea API 404 " in repo["error"], repo
+    else:
+        _ok(agent, "delete_repo", owner=ADMIN_USER, repo=name)
 
 
 @pytest.mark.usefixtures("configure_env")
@@ -2339,12 +2357,25 @@ jobs:
         )
 
     def test_355_admin_unadopted_repos(self, agent):
-        """Agent lists unadopted repos (admin).
-
-        Nothing is orphaned: every repo on disk has a DB row, and planting a
-        bare repo would need filesystem access inside the container. So adopt
-        and delete-unadopted only have their 404 contract to assert."""
+        """Agent lists two planted unadopted repos, adopts one and deletes the other (admin)."""
         assert agent.call("admin_list_unadopted_repos") == []
+        adopt, discard = "unadopted-keep", "unadopted-drop"
+        with ExitStack() as cleanup:
+            for name in (adopt, discard):
+                plant_bare_repo(ADMIN_USER, name)
+                cleanup.callback(_remove_planted, agent, name)
+
+            assert sorted(agent.call("admin_list_unadopted_repos")) == [
+                f"{ADMIN_USER}/{discard}", f"{ADMIN_USER}/{adopt}",
+            ]
+            assert agent.call("admin_list_unadopted_repos",
+                query=f"{ADMIN_USER}/*-keep",
+            ) == [f"{ADMIN_USER}/{adopt}"]
+
+            _ok(agent, "admin_adopt_repo", owner=ADMIN_USER, repo=adopt)
+            assert agent.call("get_repo", owner=ADMIN_USER, repo=adopt)["name"] == adopt
+            _ok(agent, "admin_delete_unadopted_repo", owner=ADMIN_USER, repo=discard)
+            assert agent.call("admin_list_unadopted_repos") == []
 
         with gitea_error(agent, 404):
             agent.call("admin_adopt_repo",
@@ -2499,6 +2530,54 @@ jobs:
             agent.call("get_workflow_job_logs",
                 owner=self.owner, repo=self.repo_name, job_id=job_id,
             )
+        with gitea_error(agent, 404):
+            agent.call("get_workflow_run_logs",
+                owner=self.owner, repo=self.repo_name, run_id=run_id,
+            )
+
+    def _dispatch_and_wait(self, agent) -> dict:
+        """Dispatch test.yml and return the run it queues - newer than every run seen before."""
+        seen = {r["id"] for r in agent.call("list_workflow_runs",
+            owner=self.owner, repo=self.repo_name,
+        )}
+        agent.call("dispatch_workflow",
+            owner=self.owner, repo=self.repo_name,
+            workflow_id="test.yml", ref="main", inputs={"greeting": "cancel me"},
+        )
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            fresh = [r for r in agent.call("list_workflow_runs",
+                owner=self.owner, repo=self.repo_name,
+            ) if r["id"] not in seen]
+            if fresh:
+                return fresh[0]
+            time.sleep(0.5)
+        raise AssertionError("the dispatched run did not appear within 20s")
+
+    def test_381_cancel_and_approve_workflow_runs(self, agent):
+        """Agent cancels and force-cancels queued runs (no runner picks them up), then hits the 409s."""
+        run = self._dispatch_and_wait(agent)
+        assert run["status"] == "queued"
+        cancelled = agent.call("cancel_workflow_run",
+            owner=self.owner, repo=self.repo_name, run_id=run["id"],
+        )
+        assert (cancelled["id"], cancelled["status"], cancelled["conclusion"]) == (
+            run["id"], "completed", "cancelled",
+        )
+        jobs = agent.call("list_workflow_run_jobs",
+            owner=self.owner, repo=self.repo_name, run_id=run["id"],
+        )
+        assert [(j["status"], j["conclusion"]) for j in jobs] == [("completed", "cancelled")]
+
+        forced = self._dispatch_and_wait(agent)
+        result = agent.call("force_cancel_workflow_run",
+            owner=self.owner, repo=self.repo_name, run_id=forced["id"],
+        )
+        assert (result["status"], result["conclusion"]) == ("completed", "cancelled")
+
+        for op in ("cancel_workflow_run", "force_cancel_workflow_run", "approve_workflow_run"):
+            with gitea_error(agent, 409):
+                agent.call(op, owner=self.owner, repo=self.repo_name, run_id=run["id"])
 
     # ── 52. Runners ───────────────────────────────────────────
 
